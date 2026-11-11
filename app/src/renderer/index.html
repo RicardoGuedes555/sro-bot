@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>SRO Bot</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="h-screen overflow-hidden">
+    <div class="flex flex-col h-full">
+      <!-- Barra de topo -->
+      <header class="flex items-center gap-4 px-4 h-14 bg-ink-800 border-b border-line">
+        <div class="flex items-center gap-2">
+          <span class="text-gold text-lg font-bold tracking-wide">SRO</span>
+          <span class="text-gray-300 text-lg font-light">Bot</span>
+        </div>
+        <span id="bag-alert" class="pill bg-danger/20 text-danger hidden" title="">mochila</span>
+        <span id="exp-alert" class="pill bg-danger/20 text-danger hidden" title="">EXP/h caiu</span>
+        <span id="conn" class="pill bg-ink-600 text-muted">
+          <span id="conn-dot" class="w-2 h-2 rounded-full bg-muted"></span>
+          <span id="conn-text">desconectado</span>
+        </span>
+        <div class="flex-1"></div>
+        <button id="btn-game" class="btn btn-gold">Abrir jogo</button>
+        <button id="btn-bot" class="btn">Iniciar bot</button>
+        <label class="flex items-center gap-2 text-sm text-gray-300 select-none cursor-pointer px-2">
+          <input type="checkbox" id="chk-login" class="accent-gold w-4 h-4" />
+          Auto-login
+        </label>
+      </header>
+
+      <div class="flex flex-1 min-h-0">
+        <!-- Lista de instancias -->
+        <aside class="w-60 bg-ink-800 border-r border-line p-3 space-y-2 overflow-y-auto">
+          <div class="stat-label mb-1">Instancias</div>
+          <div class="panel p-3">
+            <div class="flex items-center justify-between">
+              <span id="inst-name" class="text-sm font-medium text-gray-100">LDPlayer</span>
+              <span id="inst-status" class="pill bg-ink-600 text-muted">offline</span>
+            </div>
+            <div id="inst-info" class="text-xs text-muted mt-1">ldplayer · idx 0</div>
+          </div>
+        </aside>
+
+        <!-- Painel principal -->
+        <main class="flex-1 flex flex-col min-w-0">
+          <nav class="flex gap-1 px-4 bg-ink-800 border-b border-line">
+            <div class="tab tab-active" data-tab="status">Status</div>
+            <div class="tab" data-tab="stats">Estatísticas</div>
+            <div class="tab" data-tab="activities">Atividades</div>
+            <div class="tab" data-tab="tools">Ferramentas</div>
+            <div class="tab" data-tab="ai">IA</div>
+          </nav>
+
+          <section class="flex-1 overflow-y-auto p-4 space-y-4">
+            <!-- Aba Status -->
+            <div id="tab-status" class="space-y-4">
+              <div class="panel p-4">
+                <div class="flex items-center gap-3 mb-3">
+                  <div class="w-10 h-10 rounded-full bg-ink-500 border border-line flex items-center justify-center text-gold font-bold" id="p-initial">?</div>
+                  <div>
+                    <div id="p-name" class="text-gray-100 font-medium">-</div>
+                    <div id="p-sub" class="text-xs text-muted">sem leitura</div>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div><div class="stat-label">Nível</div><div id="p-level" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Posição X</div><div id="p-x" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Posição Y</div><div id="p-y" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Posição Z</div><div id="p-z" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Mochila (livres)</div><div id="p-bag" class="stat-value">-</div></div>
+                </div>
+                <div class="mt-4 grid grid-cols-2 gap-4">
+                  <div>
+                    <div class="flex justify-between items-center mb-1"><span class="stat-label">HP</span><span id="p-hp-txt" class="text-xs text-gray-300 font-mono">-</span></div>
+                    <div class="w-full h-2 bg-ink-500 rounded"><div id="p-hp" class="h-2 bg-danger rounded" style="width:0%"></div></div>
+                  </div>
+                  <div>
+                    <div class="flex justify-between items-center mb-1"><span class="stat-label">MP</span><span id="p-mp-txt" class="text-xs text-gray-300 font-mono">-</span></div>
+                    <div class="w-full h-2 bg-ink-500 rounded"><div id="p-mp" class="h-2 bg-info rounded" style="width:0%"></div></div>
+                  </div>
+                </div>
+                <div class="mt-4">
+                  <div class="stat-label mb-1">EXP</div>
+                  <div class="w-full h-2 bg-ink-500 rounded"><div id="p-exp" class="h-2 bg-gold rounded" style="width:0%"></div></div>
+                </div>
+              </div>
+
+              <div class="panel p-4">
+                <div class="stat-label mb-2">Resposta bruta do engine</div>
+                <pre id="p-raw" class="text-xs text-muted font-mono whitespace-pre-wrap">-</pre>
+              </div>
+            </div>
+
+            <!-- Aba Estatisticas -->
+            <div id="tab-stats" class="hidden space-y-4">
+              <div class="panel p-4">
+                <div class="flex items-center justify-between mb-3">
+                  <span class="text-sm font-medium text-gray-100">Sessão</span>
+                  <button id="btn-stats-reset" class="btn">Zerar</button>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div><div class="stat-label">Uptime</div><div id="s-uptime" class="stat-value">-</div></div>
+                  <div><div class="stat-label">EXP / hora</div><div id="s-exprate" class="stat-value">-</div></div>
+                  <div><div class="stat-label">ETA próx. nível</div><div id="s-eta" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Níveis ganhos</div><div id="s-levels" class="stat-value">-</div></div>
+                  <div><div class="stat-label">EXP atual</div><div id="s-exp" class="stat-value">-</div></div>
+                  <div><div class="stat-label">EXP ganho</div><div id="s-expgain" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Distância</div><div id="s-dist" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Amostras</div><div id="s-samples" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Mortes</div><div id="s-deaths" class="stat-value">-</div></div>
+                  <div><div class="stat-label">Tempo em combate</div><div id="s-combat" class="stat-value">-</div></div>
+                  <div><div class="stat-label">HP</div><div id="s-hp" class="stat-value">-</div></div>
+                  <div><div class="stat-label">MP</div><div id="s-mp" class="stat-value">-</div></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Aba Atividades -->
+            <div id="tab-activities" class="hidden space-y-3">
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Treino (auto-battle)</div>
+                    <div class="text-xs text-muted">liga o auto-play do jogo (curar, comprar poção, pegar item, reviver na cidade e voltar ao ponto) e vigia a caça</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-train" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="af-status" class="pill bg-ink-600 text-muted">desligado</span>
+                  </div>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-af-on" class="btn btn-gold">Ligar treino</button>
+                  <button id="btn-af-off" class="btn">Parar treino</button>
+                  <span id="af-hint" class="text-xs text-muted">requer char em mundo</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2">
+                    Parar com
+                    <input type="number" id="tr-deaths" min="0" max="99" value="0" class="w-16 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" />
+                    mortes <span class="text-xs text-muted">(0 = nunca)</span>
+                  </label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-potions" class="accent-gold w-4 h-4" checked /> Pôr poção no espaço vazio do Recover</label>
+                  <div class="md:col-span-2 space-y-1">
+                    <div class="stat-label">Pontos de caça (em ordem)</div>
+                    <div id="tr-spots" class="space-y-1"></div>
+                    <div class="flex items-center gap-2">
+                      <button id="btn-tr-spot" class="btn">Adicionar ponto atual</button>
+                      <button id="btn-tr-spot-clear" class="btn">Limpar pontos</button>
+                      <span id="tr-spot" class="text-xs text-muted">sem ponto (caça onde estiver)</span>
+                    </div>
+                  </div>
+                  <div class="md:col-span-2 stat-label">Trocar pro próximo ponto</div>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-sw-few" class="accent-gold w-4 h-4" /> menos de <input type="number" id="tr-sw-min" min="1" max="50" value="1" class="w-14 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /> monstro(s) a <input type="number" id="tr-sw-radius" min="10" max="300" value="100" class="w-16 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /> m</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-sw-deaths-on" class="accent-gold w-4 h-4" /> depois de <input type="number" id="tr-sw-deaths" min="1" max="99" value="3" class="w-14 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /> morte(s) no ponto</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-sw-hp-on" class="accent-gold w-4 h-4" /> com HP abaixo de <input type="number" id="tr-sw-hp" min="10" max="90" value="50" class="w-14 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" />% no ponto (troca fora de combate)</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none md:col-span-2"><input type="checkbox" id="tr-players" class="accent-gold w-4 h-4" /> Jogador de fora do time caçando a menos de 80 m por 2 min: trocar pro canal mais vazio (nunca o Activity Channel); sem canal livre, ir pro próximo ponto</label>
+                  <div class="md:col-span-2 stat-label">Parar o treino também</div>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-stop-level-on" class="accent-gold w-4 h-4" /> no nível <input type="number" id="tr-stop-level" min="1" max="140" value="90" class="w-16 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /> com <input type="number" id="tr-stop-exp" min="0" max="100" value="0" class="w-14 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" />% de EXP</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-stop-gold-on" class="accent-gold w-4 h-4" /> com gold abaixo de <input type="number" id="tr-stop-gold" min="0" value="100000" class="w-28 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                  <div class="flex items-center gap-2 md:col-span-2">
+                    <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-home-on" class="accent-gold w-4 h-4" /> Ao parar, ir pra cidade</label>
+                    <button id="btn-tr-home" class="btn">Salvar cidade (ponto atual)</button>
+                    <span id="tr-home" class="text-xs text-muted">sem cidade salva</span>
+                  </div>
+                  <div class="md:col-span-2 stat-label">Time (bônus de EXP e SP: 2 membros 5% até 6 membros 25%)</div>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-team-on" class="accent-gold w-4 h-4" /> Sem time, entrar num time aberto</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-team-same" class="accent-gold w-4 h-4" /> só times no mesmo mapa</label>
+                  <div class="md:col-span-2 stat-label">Itens de buff (só caçando no ponto, um de cada vez)</div>
+                  <label class="flex items-center gap-2 cursor-pointer select-none md:col-span-2"><input type="checkbox" id="tr-booster" class="accent-gold w-4 h-4" /> Exp Booster (200% 1 h, depois 200% 2 h, depois 100%)</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-buff-dano" class="accent-gold w-4 h-4" /> Pergaminho de dano 20% (30 min)</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-buff-vip" class="accent-gold w-4 h-4" /> VIP Scroll +40 STR/INT (1 h)</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none md:col-span-2"><input type="checkbox" id="tr-berserk" class="accent-gold w-4 h-4" /> Berserk automático em combate (quando a barra enche; não gasta item)</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none md:col-span-2"><input type="checkbox" id="tr-devil" class="accent-gold w-4 h-4" /> Devil automático em combate (assim que sair da recarga; não gasta item)</label>
+                  <div class="md:col-span-2 stat-label">Mochila</div>
+                  <div class="flex items-center gap-2 md:col-span-2">
+                    <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="tr-sell" class="accent-gold w-4 h-4" /> Com menos de 15 espaços livres, vender o lixo (equipamento de pet comum e restos de monstro; nada mais)</label>
+                    <button id="btn-sell-now" class="btn">Vender lixo agora</button>
+                  </div>
+                  <div class="md:col-span-2 stat-label">Skills</div>
+                  <label class="flex items-center gap-2 cursor-pointer select-none md:col-span-2"><input type="checkbox" id="tr-skills" class="accent-gold w-4 h-4" /> No level-up, subir as maestrias que já uso e as skills que elas liberam (gasta SP; não aprende skill nova)</label>
+                </div>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Demon Locking Tower</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-tower" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="dlt-status" class="pill bg-ink-600 text-muted">parado</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="dlt-refresh" class="accent-gold w-4 h-4" /> Refresh ao falhar</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="dlt-sweep" class="accent-gold w-4 h-4" /> Sweep</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="dlt-fight" class="accent-gold w-4 h-4" /> Lutar 1x antes de sweepar</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="dlt-buff" class="accent-gold w-4 h-4" /> Voltar à área segura e usar buffs</label>
+                  <label class="flex items-center gap-2 md:col-span-2 cursor-pointer select-none">
+                    <input type="checkbox" id="dlt-refreshreward" class="accent-gold w-4 h-4" />
+                    Refresh da recompensa; parar quando ratio &ge;
+                    <input type="number" id="dlt-ratio" step="0.1" min="1" max="1.5" value="1.3" class="w-16 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" />
+                    <span class="text-xs text-muted">(1.0 a 1.5)</span>
+                  </label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-dlt-save" class="btn btn-gold">Salvar config</button>
+                  <span class="text-xs text-muted">roda pelo Iniciar bot quando "Ativa"</span>
+                </div>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Firm (tarefa diária da guilda)</div>
+                    <div class="text-xs text-muted">aceita no Leebaek, entrega o que tiver no inventário e pede ajuda à guilda no resto; nunca troca tarefa nem usa conclusão instantânea</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-firm" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="fm-status" class="pill bg-ink-600 text-muted">parado</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2">Concluir com <input type="number" id="fm-stop" min="1" max="6" value="3" class="w-14 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /> entregues no dia</label>
+                  <label class="flex items-center gap-2">Entregar item de qualidade até <input type="number" id="fm-quality" min="0" max="9" value="2" class="w-14 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /> <span class="text-xs text-muted">(Tablet e Element são 4)</span></label>
+                  <label class="flex items-center gap-2 md:col-span-2">Liberar itens (IDs) <input type="text" id="fm-allow" placeholder="ex.: 850010689 (Wind Element)" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="fm-help" class="accent-gold w-4 h-4" checked /> Pedir ajuda à guilda (3 por dia)</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="fm-teleport" class="accent-gold w-4 h-4" checked /> Viajar até Jangan (gold)</label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-fm-save" class="btn btn-gold">Salvar config</button>
+                  <span class="text-xs text-muted">precisa de guilda</span>
+                </div>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Guild utilities</div>
+                    <div class="text-xs text-muted">sign-in da guilda, baús do sign-in e salário, no char principal; nunca o sign-in de Silk</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-guild" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="gu-status" class="pill bg-ink-600 text-muted">parado</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2">Sign-in
+                    <select id="gu-signin" class="bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100">
+                      <option value="off">Desligado</option>
+                      <option value="normal">Normal (25.000 gold)</option>
+                      <option value="luxury">Luxury (50.000 gold)</option>
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="gu-chests" class="accent-gold w-4 h-4" checked /> Abrir os baús do sign-in</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="gu-salary" class="accent-gold w-4 h-4" checked /> Receber o salário</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="gu-red" class="accent-gold w-4 h-4" checked /> Avisar red packet disponível</label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-gu-save" class="btn btn-gold">Salvar config</button>
+                  <span class="text-xs text-muted">precisa de guilda; o tipo de Silk do sign-in nunca é usado</span>
+                </div>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Baús de atividade diária</div>
+                    <div class="text-xs text-muted">pega os baús de 30, 60, 90, 120 e 150 pontos assim que liberam (confere a cada 15 min, com a caça ligada); os pontos zeram às 18:00</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-actchest" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="ac-status" class="pill bg-ink-600 text-muted">parado</span>
+                  </div>
+                </div>
+                <div class="text-xs text-muted">o baú semanal (500 e 1000) só é avisado no log</div>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Grátis do dia</div>
+                    <div class="text-xs text-muted">pacotes grátis do Event (Premium Shop), attendance do Welfare com os prêmios de 7/14/21/28 dias, a caixinha do Daily Pack, os baús do sign-in da guilda (20/40/80/120) quando o progresso alcança e os red envelopes do Lucky Money (confere a cada 30 min; das 09:00 às 11:15, a cada 5 min; com a caça ligada)</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-freebies" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="fb-status" class="pill bg-ink-600 text-muted">parado</span>
+                  </div>
+                </div>
+                <div class="text-xs text-muted">só pacote com preço 0; o attendance só com o dia de hoje sem marcar (marcar de novo é o re-sign pago); Diamond e Silk conferidos depois de cada pedido</div>
+                <label class="flex items-center gap-2 text-sm text-gray-300 cursor-pointer select-none"><input type="checkbox" id="fb-donate" class="accent-gold w-4 h-4" /> Doar no Support da guilda (pedidos de outros membros, até 10 itens por dia; dá contribuição; nunca item que o Firm do dia ainda precisa)</label>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Qigong</div>
+                    <div class="text-xs text-muted">com membros da guilda a 10 níveis ou mais de diferença (2 como mestre e 2 como aluno por dia); aceito, o jogo leva os dois pra uma área segura por ~30 s</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-qigong" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="qg-status" class="pill bg-ink-600 text-muted">parado</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="qg-request" class="accent-gold w-4 h-4" checked /> Pedir Qigong <span class="text-xs text-muted">(a cada 10 min, de onde estiver)</span></label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="qg-accept" class="accent-gold w-4 h-4" checked /> Aceitar Qigong <span class="text-xs text-muted">(com HP de 60% ou mais)</span></label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-qg-save" class="btn btn-gold">Salvar config</button>
+                  <span class="text-xs text-muted">precisa de guilda</span>
+                </div>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <div class="text-sm font-semibold">Continental Exploration</div>
+                    <div class="text-xs text-muted">tabuleiro de dado; o bot mira a faixa (acerta ~70%) em baú, dado extra e END, e foge da caveira</div>
+                  </div>
+                  <div class="flex items-center gap-3">
+                    <label class="flex items-center gap-1 text-xs text-gray-300 cursor-pointer select-none"><input type="checkbox" id="act-cont" class="accent-gold w-4 h-4" /> Ativa</label>
+                    <span id="ce-status" class="pill bg-ink-600 text-muted">parado</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2 md:col-span-2">
+                    Região
+                    <select id="ce-map" class="bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100">
+                      <option value="1">Chinese (Lv30)</option>
+                      <option value="2">Hotan (Lv45)</option>
+                      <option value="3">Desert (Lv60)</option>
+                      <option value="4">Mapa 4 (Lv75)</option>
+                      <option value="5">Mapa 5 (Lv80)</option>
+                      <option value="6">Mapa 6 (Lv85)</option>
+                      <option value="7">Mapa 7 (Lv90)</option>
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="ce-green" class="accent-gold w-4 h-4" /> Ignorar baú verde</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="ce-blue" class="accent-gold w-4 h-4" /> Ignorar baú azul</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="ce-restart" class="accent-gold w-4 h-4" /> Reiniciar o jogo se travar no evento</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="ce-onlyopen" class="accent-gold w-4 h-4" /> Só destravar e pegar baús, não rolar</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="checkbox" id="ce-stoppurple" class="accent-gold w-4 h-4" /> Parar de rolar com os 3 baús roxos ou melhores</label>
+                  <label class="flex items-center gap-2 md:col-span-2">
+                    Personagens
+                    <input type="text" id="ce-chars" placeholder="em ordem, separados por vírgula; Nome@Servidor pra outro servidor (vazio = só o atual)" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" />
+                  </label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-ce-save" class="btn btn-gold">Salvar config</button>
+                  <span class="text-xs text-muted">Special Chest e "Open now" são pagos: o bot não usa</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Aba IA (opcional; nao mexe no resto do bot) -->
+            <div id="tab-ai" class="hidden space-y-3">
+              <div class="panel p-4 space-y-3">
+                <div>
+                  <div class="text-sm font-semibold">IA (opcional)</div>
+                  <div class="text-xs text-muted">Manual: o bot funciona como sempre e nada sai do PC. Conectar IA: um assistente que lê o estado real do bot e sugere o que fazer. Ele não executa nada no jogo.</div>
+                </div>
+                <div class="flex items-center gap-4 text-sm text-gray-300">
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="radio" name="ai-mode" id="ai-mode-manual" value="manual" class="accent-gold" /> Manual</label>
+                  <label class="flex items-center gap-2 cursor-pointer select-none"><input type="radio" name="ai-mode" id="ai-mode-ai" value="ai" class="accent-gold" /> Conectar IA</label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2">Provedor
+                    <select id="ai-provider" class="bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100">
+                      <option value="ollama">Ollama (local, grátis)</option>
+                      <option value="openrouter">OpenRouter (grátis, modelos :free)</option>
+                      <option value="groq">Groq (grátis)</option>
+                      <option value="mistral">Mistral (grátis)</option>
+                      <option value="gemini">Gemini (chave da Google; agora pede pré-pagamento)</option>
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2">Modelo <input type="text" id="ai-model" list="ai-models" placeholder="vazio = automático; a lista vem da chave depois de Salvar" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /><datalist id="ai-models"></datalist></label>
+                  <label class="flex items-center gap-2 md:col-span-2">Ollama <input type="text" id="ai-ollama" placeholder="http://127.0.0.1:11434" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                  <label class="flex items-center gap-2 md:col-span-2">Ações no jogo
+                    <select id="ai-actions" class="bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100">
+                      <option value="off">Desligadas (só sugere)</option>
+                      <option value="confirm">Com confirmação (botão Executar)</option>
+                      <option value="auto">Automáticas</option>
+                    </select>
+                    <span class="text-xs text-muted">lista fechada e com travas: ponto até o nível do char menos 8, nunca desliga a caça em combate, nada pago</span>
+                  </label>
+                  <label class="flex items-center gap-2 md:col-span-2">Chave da API <input type="password" id="ai-key" autocomplete="off" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                </div>
+                <div class="flex items-center gap-3 flex-wrap">
+                  <button id="btn-ai-save" class="btn btn-gold">Salvar</button>
+                  <button id="btn-ai-delkey" class="btn">Apagar chave</button>
+                  <span id="ai-status" class="text-xs text-muted"></span>
+                </div>
+              </div>
+              <div class="panel p-4 space-y-2">
+                <div class="flex items-center justify-between">
+                  <div class="text-sm font-semibold">O que a IA vê agora</div>
+                  <button id="btn-ai-snap" class="btn">Atualizar</button>
+                </div>
+                <pre id="ai-snap" class="text-[11px] font-mono text-gray-300 whitespace-pre-wrap">-</pre>
+              </div>
+              <div class="panel p-4 space-y-2">
+                <div class="flex items-center justify-between">
+                  <div class="text-sm font-semibold">Farm &amp; Hunting <span class="text-xs text-muted">(EXP/h por área, do histórico)</span></div>
+                  <div class="flex items-center gap-2">
+                    <select id="hist-hours" class="bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100 text-sm">
+                      <option value="6">6 h</option>
+                      <option value="24" selected>24 h</option>
+                      <option value="168">7 dias</option>
+                    </select>
+                    <button id="btn-hist" class="btn">Atualizar</button>
+                  </div>
+                </div>
+                <table class="w-full text-sm text-gray-300">
+                  <thead><tr class="text-left text-xs text-muted"><th>Área</th><th>Tempo</th><th>EXP/h</th><th>HP mín.</th><th>Mortes</th></tr></thead>
+                  <tbody id="hist-areas"><tr><td colspan="5" class="text-xs text-muted">-</td></tr></tbody>
+                </table>
+                <div class="text-sm font-semibold pt-2">Histórico</div>
+                <pre id="hist-events" class="text-[11px] font-mono text-gray-300 whitespace-pre-wrap max-h-40 overflow-y-auto">-</pre>
+              </div>
+              <div class="panel p-4 space-y-2">
+                <div class="text-sm font-semibold">AI Assistant</div>
+                <div id="ai-chat" class="text-sm space-y-2 max-h-80 overflow-y-auto"></div>
+                <div class="flex items-end gap-2">
+                  <textarea id="ai-input" rows="2" placeholder="Ex.: o meu personagem está upando bem? Tem risco de acabar poção hoje à noite?" class="flex-1 bg-ink-600 border border-line rounded px-2 py-1 text-gray-100"></textarea>
+                  <button id="btn-ai-send" class="btn btn-gold">Enviar</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Aba Ferramentas -->
+            <div id="tab-tools" class="hidden space-y-3">
+              <div class="panel p-4 space-y-3">
+                <div>
+                  <div class="text-sm font-semibold">Conta do jogo</div>
+                  <div class="text-xs text-muted">ID e senha da Gamo pro auto-login entrar sozinho quando a conta deslogar. A senha fica criptografada pelo Windows e nunca aparece de novo, nem no log nem na IA.</div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2">ID <input type="text" id="cred-id" autocomplete="off" spellcheck="false" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                  <label class="flex items-center gap-2">Senha <input type="password" id="cred-pwd" autocomplete="new-password" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-cred-save" class="btn btn-gold">Salvar</button>
+                  <button id="btn-cred-clear" class="btn">Apagar</button>
+                  <span id="cred-status" class="text-xs text-muted">-</span>
+                </div>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div>
+                  <div class="text-sm font-semibold">Configuração</div>
+                  <div class="text-xs text-muted">qual emulador, onde ele está e qual instância o bot usa</div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-300">
+                  <label class="flex items-center gap-2 md:col-span-2">Emulador
+                    <select id="st-emu" class="bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100">
+                      <option value="ldplayer">LDPlayer 9</option>
+                      <option value="mumu">MuMu Player</option>
+                    </select>
+                  </label>
+                  <label class="flex items-center gap-2 md:col-span-2">Pasta do LDPlayer <input type="text" id="st-lddir" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                  <label class="flex items-center gap-2 md:col-span-2">Pasta do MuMu <input type="text" id="st-mumudir" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                  <label class="flex items-center gap-2">Instância <input type="number" id="st-inst" min="0" max="99" value="0" class="w-16 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /> <span id="st-serial" class="text-xs text-muted"></span></label>
+                  <label class="flex items-center gap-2 md:col-span-2">adb <input type="text" id="st-adb" placeholder="vazio = o adb.exe do emulador" class="flex-1 bg-ink-600 border border-line rounded px-2 py-0.5 text-gray-100" /></label>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button id="btn-st-save" class="btn btn-gold">Salvar</button>
+                  <button id="btn-st-test" class="btn">Testar conexão</button>
+                  <span id="st-adbinfo" class="text-xs text-muted"></span>
+                </div>
+                <pre id="st-result" class="text-[11px] font-mono text-gray-300 whitespace-pre-wrap"></pre>
+              </div>
+              <div class="panel p-4 space-y-3">
+                <div>
+                  <div class="text-sm font-semibold">Rota do jogo (VPN gratuita)</div>
+                  <div class="text-xs text-muted">WireGuard + Cloudflare WARP, gratuitos. Só o tráfego do jogo passa pelo túnel; o resto do PC não muda. Ligar e desligar pedem administrador do Windows.</div>
+                </div>
+                <div class="text-sm text-gray-300 space-y-1">
+                  <div>Rota: <span id="vpn-status" class="pill bg-ink-600 text-muted">-</span> <span id="vpn-ping" class="text-xs text-muted"></span></div>
+                  <div class="text-xs text-muted">IPs no túnel: <span id="vpn-ips">-</span></div>
+                  <div class="text-xs text-muted">Quedas de conexão: <span id="vpn-drops">0</span></div>
+                  <div id="vpn-missing" class="text-xs text-warn hidden"></div>
+                </div>
+                <div class="flex items-center gap-3 flex-wrap">
+                  <button id="btn-vpn-on" class="btn btn-gold">Ligar VPN</button>
+                  <button id="btn-vpn-off" class="btn">Desligar VPN</button>
+                  <button id="btn-vpn-ping" class="btn">Medir ping</button>
+                  <span class="text-xs text-muted">precisa do WireGuard instalado (wireguard.com/install)</span>
+                </div>
+              </div>
+              <div class="panel p-4 flex items-center gap-3">
+                <button id="btn-once" class="btn">Ler estado uma vez</button>
+                <span class="text-xs text-muted">consulta o engine via socket (porta 27105)</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Log -->
+          <footer class="h-28 bg-ink-800 border-t border-line p-2">
+            <div class="stat-label px-1">Log</div>
+            <pre id="log" class="text-[11px] text-muted font-mono px-1 h-16 overflow-y-auto"></pre>
+          </footer>
+        </main>
+      </div>
+    </div>
+    <script src="renderer.js"></script>
+  </body>
+</html>

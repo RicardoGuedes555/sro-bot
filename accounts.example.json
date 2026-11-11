@@ -1,0 +1,17 @@
+{
+  "settings": {
+    "max_instance": 4,
+    "spacing_s": 3.0
+  },
+  "accounts": [
+    {
+      "name": "MeuChar",
+      "emulator": {
+        "kind": "ldplayer",
+        "index": 0,
+        "install_dir": "C:/LDPlayer/LDPlayer9"
+      },
+      "activities": ["train", "daily"]
+    }
+  ]
+}

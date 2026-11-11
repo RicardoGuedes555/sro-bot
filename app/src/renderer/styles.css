@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .panel {
+    @apply bg-ink-700 border border-line rounded-lg;
+  }
+  .btn {
+    @apply px-3 py-1.5 rounded-md text-sm font-medium border border-line
+           bg-ink-600 text-gray-200 hover:bg-ink-500 transition-colors
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-gold {
+    @apply bg-gold text-ink-900 border-gold hover:bg-gold-soft font-semibold;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+  .stat-label {
+    @apply text-[11px] uppercase tracking-wide text-muted;
+  }
+  .stat-value {
+    @apply text-sm text-gray-100 font-mono;
+  }
+  .tab {
+    @apply px-3 py-2 text-sm text-muted border-b-2 border-transparent cursor-pointer
+           hover:text-gray-200;
+  }
+  .tab-active {
+    @apply text-gold border-gold;
+  }
+}
+
+body {
+  @apply bg-ink-900 text-gray-200;
+}

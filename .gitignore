@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Dados locais e segredos
+/data/
+*.local.json
+accounts.json
+*.log
+
+# Engine (build)
+engine/build/
+
+# Copia local de lib do jogo (base da injecao fora do Electron; nao versionar)
+engine/local-backup/
+
+# Saida do electron-builder (EXE)
+app/release/

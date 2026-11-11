@@ -1,0 +1,140 @@
+// Rota do jogo por VPN gratuita: WireGuard (open source) com a conta gratuita
+// do Cloudflare WARP gerada pelo wgcf (open source, MIT). Logica pura; o main
+// baixa, registra, instala o servico e le os IPs do jogo.
+//
+// Tunel dividido: so os IPs do jogo (center SEA e servidor de jogo) entram no
+// tunel. O resto do PC segue pela rota normal e o DNS nao muda.
+//
+// Visto em 2026-11-07: a rota direta Brasil-Asia oscilava de 400 para ~785 ms
+// com perda em rajada (PC e emulador juntos) e o jogo caia a cada 3 a 6 min.
+// Pelo WARP o servidor de jogo respondeu em 330 ms.
+
+export const TUNNEL_NAME = "srobot";
+export const WG_SERVICE = `WireGuardTunnel$${TUNNEL_NAME}`;
+
+export const WGCF_VERSION = "2.3.1";
+export const WGCF_URL = `https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_windows_amd64.exe`;
+// checksums.txt da release v2.3.1.
+export const WGCF_SHA256 = "e222fd9443d7cb3264d825a3e86967797fc9c938507c5d93e3cc21e4aed11dcc";
+
+// engage.cloudflareclient.com: o IP fixo evita depender do DNS na subida do tunel.
+export const WARP_ENDPOINT = "162.159.192.1:2408";
+
+// Center SEA (seacenter.n52srom.com) e o servidor de jogo do servidor principal. Os
+// outros servidores entram quando o bot ve a conexao do jogo.
+export const SEED_IPS = ["13.250.144.245", "54.169.246.199"];
+
+// Conexao do jogo que nao e do jogo: CDN, anuncio, SDK (HTTP e HTTPS).
+const NON_GAME_PORTS = new Set([80, 443]);
+
+export type ServiceState = "running" | "stopped" | "missing";
+
+// Saida do `sc query <servico>`: "STATE : 4  RUNNING" (em pt-BR, "ESTADO"). So
+// o codigo do estado e igual em todo idioma.
+export function parseServiceState(out: string): ServiceState {
+  const m = /:\s*\d+\s+(RUNNING|START_PENDING|STOPPED|STOP_PENDING|PAUSED|PAUSE_PENDING|CONTINUE_PENDING)\b/.exec(out);
+  if (!m) return "missing";
+  return m[1] === "RUNNING" || m[1] === "START_PENDING" ? "running" : "stopped";
+}
+
+function isPrivate(ip: string): boolean {
+  const [a, b] = ip.split(".").map(Number);
+  return a === 10 || a === 127 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+// IPv4 do /proc/net/tcp: 8 hex em ordem little endian ("C7F6A936" = 54.169.246.199).
+// No tcp6 o IPv4 vem mapeado: 0000000000000000FFFF0000 + os mesmos 8 hex.
+function hexToIpv4(hex: string): string | undefined {
+  const h = hex.length === 32 && /^0{16}FFFF0{4}/i.test(hex) ? hex.slice(24) : hex;
+  if (!/^[0-9a-f]{8}$/i.test(h)) return undefined;
+  const bytes = [6, 4, 2, 0].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return bytes.join(".");
+}
+
+// IPs remotos do jogo com conexao estabelecida (estado 01), pelo uid do app.
+export function gameServerIps(procNetTcp: string, uid: number): string[] {
+  const ips = new Set<string>();
+  for (const line of procNetTcp.split("\n")) {
+    const f = line.trim().split(/\s+/);
+    if (f.length < 8 || f[3] !== "01" || Number(f[7]) !== uid) continue;
+    const [hex, portHex] = f[2].split(":");
+    const ip = hex && hexToIpv4(hex);
+    if (!ip || isPrivate(ip) || NON_GAME_PORTS.has(parseInt(portHex, 16))) continue;
+    ips.add(ip);
+  }
+  return [...ips].sort();
+}
+
+// AllowedIPs do tunel ja instalado.
+export function tunnelIps(conf: string): string[] {
+  const m = /^AllowedIPs\s*=\s*(.+)$/m.exec(conf);
+  if (!m) return [];
+  return m[1].split(",").map((s) => s.trim().replace(/\/32$/, "")).filter(Boolean);
+}
+
+// IPs do jogo que estao fora do tunel.
+export function missingIps(tunnel: string[], seen: string[]): string[] {
+  const have = new Set(tunnel);
+  return seen.filter((ip) => !have.has(ip));
+}
+
+// Config do tunel a partir do perfil do wgcf: sem DNS (nao mexe no PC), so os
+// IPs do jogo, keepalive (a conexao parada nao expira no NAT) e endpoint fixo.
+export function buildTunnelConf(profile: string, ips: string[]): string {
+  if (!/PrivateKey\s*=/.test(profile) || !/PublicKey\s*=/.test(profile)) throw new Error("perfil do wgcf invalido");
+  const allowed = [...new Set(ips)].map((ip) => `${ip}/32`).join(", ");
+  const out: string[] = [];
+  for (const line of profile.replace(/\r/g, "").split("\n")) {
+    if (/^DNS\s*=/.test(line) || /^PersistentKeepalive\s*=/.test(line)) continue;
+    if (/^AllowedIPs\s*=/.test(line)) {
+      out.push(`AllowedIPs = ${allowed}`, "PersistentKeepalive = 15");
+    } else if (/^Endpoint\s*=/.test(line)) {
+      out.push(`Endpoint = ${WARP_ENDPOINT}`);
+    } else {
+      out.push(line);
+    }
+  }
+  return out.join("\r\n").trim() + "\r\n";
+}
+
+// Permissao pro usuario iniciar, parar e consultar so o servico do tunel (sem
+// UAC a cada reinicio): ACE "(A;;RPWPLCRC;;;<SID>)" na DACL, antes da SACL.
+export function grantSddl(sddl: string, sid: string): string {
+  const s = sddl.trim();
+  if (!/^S-1-[\d-]+$/.test(sid)) throw new Error("SID invalido");
+  const ace = `(A;;RPWPLCRC;;;${sid})`;
+  // O Windows reordena os direitos (RPWPLCRC vira LCRPWPRC): confere pelo SID.
+  if (s.includes(`;;;${sid})`)) return s;
+  const sacl = s.indexOf("S:");
+  return sacl >= 0 ? s.slice(0, sacl) + ace + s.slice(sacl) : s + ace;
+}
+
+// Tunel "ligado mas mudo" (visto em 2026-11-07: depois de reinstalar, o WARP nao
+// fechou o handshake por 17 min; reiniciar o servico resolveu na hora).
+export const HEALTH_RETRY_MS = 15 * 60 * 1000;
+export type HealthAction = "none" | "restart" | "retry";
+
+export function healthAction(
+  service: ServiceState,
+  tunnelOk: boolean,
+  internetOk: boolean,
+  fallbackAt: number,
+  now: number,
+): HealthAction {
+  if (service === "running") return tunnelOk || !internetOk ? "none" : "restart";
+  // Parado pelo proprio check (rota direta): tenta de novo de tempos em tempos.
+  if (service === "stopped" && fallbackAt > 0 && now - fallbackAt >= HEALTH_RETRY_MS) return "retry";
+  return "none";
+}
+
+// Saida do `ping -n N ip` do Windows: perda no "(N% ...)" e a media e o ultimo
+// "= Nms" do resumo. Nao depende do idioma (o acento vem quebrado no cp850).
+export function parsePing(out: string): { avgMs?: number; lossPct?: number } {
+  const loss = /\((\d+)%/.exec(out);
+  const ms = [...out.matchAll(/=\s*(\d+)\s*ms/g)];
+  const summary = /(\d+)%/.test(out) && ms.length ? ms[ms.length - 1] : undefined;
+  return {
+    lossPct: loss ? Number(loss[1]) : undefined,
+    avgMs: summary ? Number(summary[1]) : undefined,
+  };
+}
