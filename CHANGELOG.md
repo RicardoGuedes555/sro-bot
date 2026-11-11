@@ -4,6 +4,9 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 
 ## [Nao lancado]
 
+- **App:** aba **Mapa**, a visao de cima ao vivo do que esta em volta do char: voce no centro (norte pra cima), monstros com nivel e barra de HP (elite e chefe em cores proprias), o alvo atual marcado e ligado por uma linha, outros jogadores e a party com nome e nivel, NPCs e pets, itens no chao, os pontos de caca salvos com o raio, grade em metros, zoom e radar de 120 m. O topo mostra o mapa, o canal e as contagens. So le com a aba aberta e o jogo conectado.
+- **Engine:** comando `ENTS`, que entrega numa consulta o jogador, o alvo do auto-play, as entidades ate 150 m (tipo, nivel, HP, nome em UTF-8) e os itens no chao. Sem ele (engine antigo), o mapa usa uma leitura mais lenta pelo GETP a cada 20 s, sem HP e sem itens no chao. O engine novo entra quando o jogo e reaberto pelo app.
+
 ## [0.142.0] - 2026-11-11
 
 - **App:** depois de atualizar pelo botao, o app volta como estava: reabre o jogo (so reconecta, com o char em mundo) e religa o bot se ele estava rodando. O aviso vale por 10 min. Passa a valer nas atualizacoes feitas a partir desta versao.
