@@ -30,11 +30,16 @@ honesto com o jogo.
    cd app
    npm run typecheck
    npm test
+   cd ..
+   bash .github/scripts/guard.sh
    ```
+   O CI roda os três em todo push e PR. A guarda falha com referência a bot
+   proprietário, nome de conta ou de jogador, e-mail pessoal, caminho do PC ou
+   travessão.
 4. Registre a mudança no [CHANGELOG.md](CHANGELOG.md): uma linha na versão nova,
    dizendo o que mudou para quem usa.
-5. Mensagem de commit curta, com o prefixo da parte tocada: `app:`, `engine:`
-   ou `docs:`. Uma intenção por commit.
+5. Mensagem de commit curta, com o prefixo da parte tocada: `app:`, `engine:`,
+   `docs:` ou `ci:`. Uma intenção por commit.
 
 ## Caminho novo no jogo
 

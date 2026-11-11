@@ -1,5 +1,7 @@
 # sro-bot
 
+[![CI](https://github.com/joaodematejr/sro-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/joaodematejr/sro-bot/actions/workflows/ci.yml)
+
 Bot de código aberto para o **Silkroad Origin Mobile** rodando em emulador
 Android no Windows (LDPlayer ou MuMu Player). Um app desktop em Electron
 controla o jogo por um engine nativo que roda dentro do processo do jogo e
