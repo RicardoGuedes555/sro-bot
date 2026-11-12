@@ -4,6 +4,9 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 
 ## [Nao lancado]
 
+- **App:** o painel do Continental mostra a hora da proxima rodada de dados (e da passada de baus, quando vem antes). Entre as rodadas de 12 h a passada de baus nao rola dado, de proposito (a caveira abre luta no meio da caca), e isso parecia travado.
+- **App:** com o char fora da caca (sem o Treino rodando, fora de combate e sem lista de chars), a passada de baus tambem rola os dados, desde que tenha recarregado ao menos um (1h30) desde a ultima rodada. Cacando, segue so baus como antes.
+
 ## [0.143.0] - 2026-11-11
 
 - **App:** avisos no celular pelo Telegram (Ferramentas > Avisos no Telegram). A pessoa cria um bot no `@BotFather`, cola o token (fica criptografado pelo Windows, nunca volta pra tela nem pro log), manda um "oi" pro bot e clica em Ligar: o app acha o chat sozinho e manda uma mensagem de teste. Dois grupos: "Problemas" (morte, queda da conexao, jogo congelado, falha ao reabrir, conta em outro aparelho, mochila cheia, EXP/h caiu), ligado por padrao, e "Fim de atividade" (treino e Continental concluidos). O mesmo aviso sai no maximo a cada 10 min, menos morte.
