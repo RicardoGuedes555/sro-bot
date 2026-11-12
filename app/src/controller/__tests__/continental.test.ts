@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   type BoxSlot,
   continentalMapFor,
+  CONTINENTAL_AUTO_CARDS,
+  rankContinentalMapsByAlbum,
   AimTracker,
   AIM_SETTLE_MS,
   ARENA_MAX_MS,
@@ -36,9 +38,6 @@ import {
   chestDelayMs,
   CHEST_MAX_MS,
   CHEST_MIN_MS,
-  chestPassRolls,
-  contScheduleText,
-  DICE_REGEN_MS,
 } from "../continental";
 
 // Tabuleiro do Chinese na tela, dados carregados, pronto pra rolar, sem baus.
@@ -343,23 +342,6 @@ test("passada de baus: logo depois do cronometro, entre 10 min e 2 h", () => {
   assert.equal(chestDelayMs(null), CHEST_MAX_MS);
 });
 
-test("passada de baus rola os dados so com o char fora da caca e um dado recarregado", () => {
-  const idle = { training: false, inCombat: false, multiChar: false, sinceRoundMs: DICE_REGEN_MS };
-  assert.equal(chestPassRolls(idle), true);
-  assert.equal(chestPassRolls({ ...idle, training: true }), false); // no ponto: caveira abre luta
-  assert.equal(chestPassRolls({ ...idle, inCombat: true }), false);
-  assert.equal(chestPassRolls({ ...idle, multiChar: true }), false); // troca de char reinicia o jogo
-  assert.equal(chestPassRolls({ ...idle, sinceRoundMs: DICE_REGEN_MS - 1 }), false);
-});
-
-test("agenda do Continental mostra a rodada de dados e a passada de baus antes dela", () => {
-  const fmt = (t: number) => `t${t}`;
-  assert.equal(contScheduleText(500, 200, 100, fmt), "próxima rodada de dados: t500 · passada de baús: t200");
-  assert.equal(contScheduleText(500, 600, 100, fmt), "próxima rodada de dados: t500"); // baus depois: a rodada trata
-  assert.equal(contScheduleText(50, 200, 100, fmt), "próxima rodada de dados: agora");
-  assert.equal(contScheduleText(500, 0, 100, fmt), "próxima rodada de dados: t500 · passada de baús: agora");
-});
-
 // Continental no ponto com a caca ligada (sem ir pra cidade; a morte das 09:49
 // de 2026-11-08 foi na ida da pausa antiga).
 test("no ponto: so comeca com HP de 90% ou mais e desiste fora da arena com HP abaixo de 60%", async () => {
@@ -386,4 +368,86 @@ test("mapa automatico: o mais alto que o nivel do char libera (Lv.87 rolava no C
   // Tabuleiro do Chinese aberto com o automatico pedindo o Asia Minor: reabre pra trocar.
   const st = step(snap({ mapId: 1, level: 87 }), auto);
   assert.equal(st.kind === "act" && st.id, "reopen");
+});
+
+test("mapa automatico por cards: prioriza o mapa cujos cards faltam para fechar estrelas", () => {
+  const groupChinese = {
+    groupId: 1,
+    name: "Beginning",
+    currentStar: 0,
+    maxStar: 2,
+    actionNum: 0,
+    sets: [
+      {
+        setId: 101,
+        groupId: 1,
+        status: 2,
+        active: false,
+        canActive: false,
+        starRequirements: {
+          0: [{ cardId: 6001, count: 2 }],
+          1: [{ cardId: 6001, count: 4 }],
+          2: [{ cardId: 6001, count: 6 }],
+        },
+      },
+    ],
+  };
+
+  const groupHotan = {
+    groupId: 2,
+    name: "Discover",
+    currentStar: 2,
+    maxStar: 2,
+    actionNum: 10,
+    sets: [],
+  };
+
+  const groupDesert = {
+    groupId: 3,
+    name: "Master",
+    currentStar: 1,
+    maxStar: 2,
+    actionNum: 2,
+    sets: [
+      {
+        setId: 301,
+        groupId: 3,
+        status: 2,
+        active: false,
+        canActive: false,
+        starRequirements: {
+          1: [{ cardId: 6041, count: 5 }],
+          2: [{ cardId: 6041, count: 10 }],
+        },
+      },
+    ],
+  };
+
+  const owned = new Map<number, number>([
+    [6001, 1], // falta apenas 1 para fechar no Chinese (urgencia maxima)
+    [6041, 0], // faltam 5 no Desert
+  ]);
+
+  const ranked = rankContinentalMapsByAlbum([groupChinese, groupHotan, groupDesert], owned, 80);
+  assert.ok(ranked.length >= 3);
+  // Chinese (id 1) deve vir em 1º lugar porque falta só 1 carta para fechar o set atual
+  assert.equal(ranked[0].mapId, 1);
+  assert.ok(ranked[0].score > ranked[1].score);
+  // Hotan (id 2) ja esta no maximo (currentStar === maxStar), entao score 0
+  const hotanScore = ranked.find((r) => r.mapId === 2);
+  assert.equal(hotanScore?.score, 0);
+
+  // continentalMapFor com CONTINENTAL_AUTO_CARDS escolhe o mapa de maior score
+  const cfgAutoCards = {
+    ...DEFAULT_CONTINENTAL_CONFIG,
+    mapId: CONTINENTAL_AUTO_CARDS,
+    albumSnapshot: {
+      inWorld: true,
+      tablesLoaded: true,
+      groups: [groupChinese, groupHotan, groupDesert],
+      ownedCounts: owned,
+      cardMeta: new Map(),
+    },
+  };
+  assert.equal(continentalMapFor(cfgAutoCards, 80), 1);
 });

@@ -1619,6 +1619,9 @@ async function maybeRunChests(): Promise<void> {
     log("Continental: passada so de baus.");
     await window.sro.runContinental({ ...readContUi(), onlyOpenChests: true });
     await scheduleChests();
+    // Ao abrir baus, novos cards podem ter caido: chama analise do album e engatilha dados se tiver vaga
+    cardAlbumNextAt = 0;
+    setContNext(0);
   } finally {
     contBusy = false;
   }
