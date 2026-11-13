@@ -11,6 +11,7 @@ import { QIGONG_REQUEST_EVERY_MS } from "../controller/qigong";
 import { EXP_KEEP_MS, expDropText, type ExpPoint as RatePoint, type ExpWatch, expWatchStep } from "../controller/expwatch";
 import { alertFromLog, type TelegramAlert } from "../controller/telegram";
 import { uniqueStep, uniqueText } from "../controller/unique";
+import { CHAT_CHANNELS, type ChatMessage, mergeChat } from "../controller/chat";
 import { clearsNotice, nextNotice, noticeFromLog, type StopNotice } from "../controller/stopnotice";
 
 interface TgSettings {
@@ -57,6 +58,8 @@ declare global {
       player: () => Promise<PlayerState>;
       map: () => Promise<MapView | null>;
       ents: () => Promise<Pick<MapView, "me" | "ents"> | null>;
+      chat: (key: string, sinceId: number) => Promise<ChatMessage[] | null>;
+      chatSend: (key: string, text: string, to?: string) => Promise<{ ok: boolean; erro?: string }>;
       inject: () => Promise<{ ok: boolean; erro?: string }>;
       restore: () => Promise<{ ok: boolean; erro?: string }>;
       gameForeground: () => Promise<boolean>;
@@ -2800,7 +2803,7 @@ function wire(): void {
       document.querySelectorAll(".tab").forEach((t) => t.classList.remove("tab-active"));
       tab.classList.add("tab-active");
       const name = tab.dataset.tab!;
-      for (const t of ["status", "map", "stats", "activities", "tools", "ai"]) {
+      for (const t of ["status", "map", "chat", "stats", "activities", "tools", "ai"]) {
         $(`tab-${t}`).classList.toggle("hidden", t !== name);
       }
     });
@@ -3084,8 +3087,162 @@ function setupMap(): void {
   setInterval(() => void mapTick(), 250);
 }
 
+// ---- Chat do jogo (aba Chat) ----
+// Com a aba aberta e o jogo conectado, le as mensagens novas do canal escolhido a
+// cada 3 s. Cada canal guarda o que ja leu (ate 200). O texto entra por
+// textContent: mensagem de jogador nunca vira HTML. Responder so pelo botao (ou
+// Enter); no privado vai pra conversa escolhida (clique numa mensagem; sem
+// escolha, a mais recente).
+const CHAT_EVERY_MS = 3000;
+let chatKey: string = CHAT_CHANNELS[0].key;
+const chatMsgs = new Map<string, ChatMessage[]>();
+let chatBusy = false;
+let chatNextAt = 0;
+let chatTo: { id: string; name: string } | null = null;
+let chatSending = false;
+
+function showChatTo(): void {
+  if (chatKey === "privado" && !chatTo) {
+    const last = [...(chatMsgs.get("privado") ?? [])].reverse().find((m) => m.peerId && m.peerId !== "0");
+    if (last) chatTo = { id: last.peerId, name: last.peer };
+  }
+  $("chat-to").textContent = chatKey === "privado" ? (chatTo ? `Para ${chatTo.name || "?"}:` : "Para: escolha uma mensagem") : "";
+}
+
+async function sendChat(): Promise<void> {
+  const input = $("chat-input") as HTMLInputElement;
+  const status = $("chat-send-status");
+  if (chatSending || !input.value.trim()) return;
+  if (!gameOpen) {
+    status.textContent = "abra o jogo para mandar mensagem";
+    status.className = "text-xs text-warn mt-1";
+    return;
+  }
+  chatSending = true;
+  ($("chat-send") as HTMLButtonElement).disabled = true;
+  try {
+    const r = await window.sro.chatSend(chatKey, input.value, chatKey === "privado" ? chatTo?.id : undefined);
+    if (r.ok) {
+      input.value = "";
+      status.textContent = "enviada pelo jogo; aparece aqui em alguns segundos";
+      status.className = "text-xs text-muted mt-1";
+      chatNextAt = 0;
+    } else {
+      status.textContent = "não enviada: " + (r.erro ?? "erro");
+      status.className = "text-xs text-warn mt-1";
+    }
+  } catch {
+    status.textContent = "não enviada: sem resposta do app";
+    status.className = "text-xs text-warn mt-1";
+  } finally {
+    chatSending = false;
+    ($("chat-send") as HTMLButtonElement).disabled = false;
+  }
+}
+
+function chatVisible(): boolean {
+  return !$("tab-chat").classList.contains("hidden");
+}
+
+function chatLine(m: ChatMessage): HTMLElement {
+  const row = document.createElement("div");
+  const at = document.createElement("span");
+  at.className = "text-xs text-muted mr-2 font-mono";
+  at.textContent = m.at ? new Date(m.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "--:--";
+  const who = document.createElement("span");
+  who.className = (m.self ? "text-gold" : "text-sky-300") + " mr-1";
+  who.textContent = (m.to ? `${m.from || "?"} → ${m.to}` : m.from || "sistema") + ":";
+  const text = document.createElement("span");
+  text.className = "text-gray-200 break-words";
+  text.textContent = m.text;
+  row.append(at, who, text);
+  if (m.peerId && m.peerId !== "0") {
+    row.className = "cursor-pointer hover:bg-ink-700 rounded";
+    row.title = `responder a ${m.peer || "?"}`;
+    row.addEventListener("click", () => {
+      chatTo = { id: m.peerId, name: m.peer };
+      showChatTo();
+      ($("chat-input") as HTMLInputElement).focus();
+    });
+  }
+  return row;
+}
+
+function drawChat(): void {
+  const box = $("chat-list");
+  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+  const list = chatMsgs.get(chatKey) ?? [];
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "text-muted text-xs";
+    empty.textContent = gameOpen ? "sem mensagens neste canal" : "abra o jogo para ver o chat";
+    box.replaceChildren(empty);
+    return;
+  }
+  box.replaceChildren(...list.map(chatLine));
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+
+async function chatTick(): Promise<void> {
+  if (!chatVisible() || chatBusy || Date.now() < chatNextAt) return;
+  const live = $("chat-live");
+  if (!gameOpen) {
+    live.textContent = "parado";
+    live.className = "pill bg-ink-600 text-muted";
+    return;
+  }
+  chatBusy = true;
+  const key = chatKey;
+  try {
+    const prev = chatMsgs.get(key) ?? [];
+    const fresh = await window.sro.chat(key, prev.length ? prev[prev.length - 1].id : -1);
+    live.textContent = fresh ? "ao vivo" : "sem leitura";
+    live.className = fresh ? "pill bg-ok/20 text-ok" : "pill bg-ink-600 text-muted";
+    if (fresh) chatMsgs.set(key, mergeChat(prev, fresh));
+    if (key === chatKey && (fresh?.length || !prev.length)) {
+      drawChat();
+      showChatTo();
+    }
+    chatNextAt = Date.now() + (fresh ? CHAT_EVERY_MS : 10000);
+  } catch {
+    chatNextAt = Date.now() + 10000;
+  } finally {
+    chatBusy = false;
+  }
+}
+
+function setupChat(): void {
+  const bar = $("chat-channels");
+  const paint = () => {
+    for (const b of bar.querySelectorAll<HTMLElement>("button")) b.className = "btn" + (b.dataset.ch === chatKey ? " btn-gold" : "");
+  };
+  for (const c of CHAT_CHANNELS) {
+    const b = document.createElement("button");
+    b.dataset.ch = c.key;
+    b.textContent = c.label;
+    b.addEventListener("click", () => {
+      chatKey = c.key;
+      chatNextAt = 0;
+      paint();
+      const box = $("chat-list");
+      box.scrollTop = box.scrollHeight;
+      drawChat();
+      showChatTo();
+    });
+    bar.append(b);
+  }
+  paint();
+  drawChat();
+  $("chat-send").addEventListener("click", () => void sendChat());
+  $("chat-input").addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") void sendChat();
+  });
+  setInterval(() => void chatTick(), 250);
+}
+
 wire();
 setupMap();
+setupChat();
 setConn("off", "desconectado");
 log("pronto. Iniciar injeta e sobe o jogo (marque Auto-login pra logar sozinho). Parar restaura.");
 

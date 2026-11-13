@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { isConnectionLostText, isKickedText, isSameChar, type LoginProfile, mergeProfile, parseCharTarget } from "../controller/login";
 import { autoLogin, stopAutoLogin } from "./autologin";
@@ -25,6 +27,7 @@ import {
 import { type GameState, reconnectPlan } from "../controller/libstate";
 import { type AppSettings, consolePath, normalizeSettings, resolveAdb, serialFor } from "../controller/settings";
 import { adbBin, setAdbBin, setEmulator } from "./adbbin";
+import { chatChannelId, chatSendCheck, parseTzOffset, readChatChannel, sayBody } from "../controller/chat";
 import { runDemonTower, stopDemonTower } from "./tower";
 import { hpPercent, readChannel, readEnemiesAround, readTrainSnapshot, safeToStopHunt, type TrainConfig } from "../controller/train";
 import type { FirmConfig } from "../controller/firm";
@@ -198,6 +201,38 @@ ipcMain.handle("engine:map", async () => {
 ipcMain.handle("engine:ents", async () => {
   const r = await sendCommand("127.0.0.1", HOST_PORT, "ENTS", String(MAP_RADIUS_M));
   return parseEnts(r, new Set());
+});
+
+// Chat do jogo, so leitura: as mensagens do canal com id maior que sinceId.
+// A hora vem no fuso do aparelho, lido uma vez pelo adb.
+const execFileP = promisify(execFile);
+let chatTz: number | undefined;
+ipcMain.handle("engine:chat", async (_e, key: string, sinceId: number) => {
+  const ch = chatChannelId(key);
+  if (ch === undefined) return null;
+  if (chatTz === undefined) {
+    const r = await execFileP(adbBin(), ["-s", SERIAL, "shell", "date", "+%z"], { timeout: 10000 }).catch(() => null);
+    chatTz = r ? parseTzOffset(String(r.stdout)) : undefined;
+  }
+  const q = (tag: string, body: string) => sendCommand("127.0.0.1", HOST_PORT, tag, body);
+  return readChatChannel(q, ch, sinceId, chatTz ?? 0);
+});
+
+// Responder no chat: so pelo botao do painel. Confere texto, nivel, intervalo do
+// canal e destino antes; manda pela tag CHAT (o engine chama o SendChatContent do
+// jogo). Engine antigo sem CHAT devolve so o jogador: vira erro, sem efeito.
+const chatSentAt = new Map<string, number>();
+ipcMain.handle("engine:chatsend", async (_e, key: string, text: string, to?: string) => {
+  const ch = chatChannelId(key);
+  const p = await queryPlayer("127.0.0.1", HOST_PORT).catch(() => null);
+  if (ch === undefined || !p || p.ok !== true) return { ok: false, erro: "jogo nao conectado" };
+  const level = (p as { level?: unknown }).level;
+  const c = chatSendCheck(key, String(text ?? ""), { level: typeof level === "number" ? level : undefined, lastSentAt: chatSentAt.get(key), now: Date.now(), to });
+  if (!c.ok) return { ok: false, erro: c.erro };
+  const r = await sendCommand("127.0.0.1", HOST_PORT, "CHAT", sayBody(ch, to ?? "", c.text));
+  if (r.ok !== true) return { ok: false, erro: typeof r.erro === "string" ? r.erro : "engine sem o comando de chat (abra o jogo de novo pelo app)" };
+  chatSentAt.set(key, Date.now());
+  return { ok: true };
 });
 
 // Mochila: espacos livres e ocupados (so leitura; pro aviso de mochila cheia).

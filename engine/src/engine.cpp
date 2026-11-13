@@ -82,6 +82,9 @@ struct Action {
     // (Transform.Find, GetComponent) pode rodar.
     char xm_path[192];
     char xm_opath[8][160];
+    // method 15 (CHAT): texto do chat em UTF-8 (a1 = canal) e o destino do privado.
+    char say[1024];
+    uint64_t say_to;
 };
 std::mutex g_queue_mu;
 std::vector<Action> g_queue;
@@ -599,17 +602,14 @@ bool field_is_string(void* fi) {
     return is;
 }
 
-// {"ok":true,"str":"..."} de um System.String (null vira "null":true). O
-// read_il2cpp_string ja troca nao-ASCII por '?'; aqui so escapa aspas e barra.
-// Requer FaultGuard ativo.
+std::string il2cpp_string_json(void* s, int maxLen = 128);
+
+// {"ok":true,"str":"..."} de um System.String (null vira "null":true), em UTF-8:
+// nome e chat com letra fora do ASCII saem inteiros (o chat vai ate 512
+// caracteres). Requer FaultGuard ativo.
 std::string string_json(void* s) {
     if (!s) return "{\"ok\":true,\"null\":true}";
-    std::string out = "{\"ok\":true,\"str\":\"";
-    for (char c : read_il2cpp_string(s)) {
-        if (c == '"' || c == '\\') out += '\\';
-        out += c;
-    }
-    return out + "\"}";
+    return "{\"ok\":true,\"str\":\"" + il2cpp_string_json(s, 512) + "\"}";
 }
 
 // Igual ao dump_object_values, mas com o TIPO de cada campo e, quando o valor
@@ -1311,6 +1311,37 @@ void exec_auto_main(const Action& act) {
         return;
     }
 
+    // method 15 = CHAT: XChatView.SendChatContent(texto, canal, ...), o mesmo
+    // caminho do botao Enviar do chat (filtro de palavras e bloqueio do proprio
+    // jogo). No privado o destino e o ChatFriendId da tela, trocado so durante a
+    // chamada e devolvido depois.
+    if (method == 15) {
+        void* klass = find_class_by_name("XChatView");
+        void* view = klass ? resolve_singleton(klass) : nullptr;
+        if (!plausible_obj(view)) { LOGE("say: XChatView nulo"); return; }
+        const void* m = g_api.class_get_method_from_name(klass, "SendChatContent", 10);
+        if (!m || !g_api.string_new) { LOGE("say: SendChatContent nao achado"); return; }
+        uint64_t* friend_id = nullptr;
+        if (act.a1 == 3) {
+            void* fi = g_api.class_get_field_from_name(klass, "ChatFriendId");
+            if (!fi) { LOGE("say: ChatFriendId nao achado"); return; }
+            friend_id = (uint64_t*)((char*)view + g_api.field_get_offset(fi));
+        }
+        uint64_t before = friend_id ? *friend_id : 0;
+        if (friend_id) *friend_id = act.say_to;
+        int32_t ch = act.a1;
+        uint8_t yes = 1, no = 0;
+        uint32_t zero = 0;
+        // content, channelType, selfReceive, param, bIsSystem, audioUrl,
+        // audioFileName, audiotime, isRecruit, isDragonGuildRecruit
+        void* p[10] = {g_api.string_new(act.say), &ch, &yes, nullptr, &no, nullptr, nullptr, &zero, &no, &no};
+        void* exc = nullptr;
+        g_api.runtime_invoke(m, view, p, &exc);
+        if (friend_id) *friend_id = before;
+        LOG("exec say canal=%d exc=%s", ch, exc ? "sim" : "nao");
+        return;
+    }
+
     // method 14 = callxm: o callx com os caminhos resolvidos aqui, na thread
     // principal. Serve pra objeto que so se alcanca por metodo da Unity (botao
     // de tela: Transform Find:"Chest" GetComponent:"XUISprite"), que na thread
@@ -1969,11 +2000,12 @@ std::string walk_path(const std::vector<std::string>& path, size_t end, void*& o
 }
 
 // Il2CppString (UTF-16) em UTF-8 com escape de JSON. O read_il2cpp_string troca
-// letra fora do ASCII por "?"; aqui o nome sai inteiro pro mapa.
-std::string il2cpp_string_json(void* s) {
+// letra fora do ASCII por "?"; aqui o texto sai inteiro (nomes do mapa e GETP).
+// Texto maior que maxLen volta vazio, como no read_il2cpp_string.
+std::string il2cpp_string_json(void* s, int maxLen) {
     std::string out;
     int len = 0;
-    if (!plausible(s) || !safe_read(&len, (char*)s + 0x10, 4) || len <= 0 || len > 128) return out;
+    if (!plausible(s) || !safe_read(&len, (char*)s + 0x10, 4) || len <= 0 || len > maxLen) return out;
     for (int i = 0; i < len; i++) {
         uint16_t c = 0;
         if (!safe_read(&c, (char*)s + 0x14 + i * 2, 2)) break;
@@ -2491,6 +2523,37 @@ std::string dispatch_command(const std::string& tag, const std::string& body) {
         char buf[120];
         std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"enfileirado\":[%.1f,%.1f,%.1f]}", x, y, z);
         return buf;
+    }
+    // CHAT <canal> <roleid> <hex>: manda uma mensagem no chat (method 15). Canal
+    // 1 Mundo, 2 Guilda, 7 Party, 3 Privado (roleid = destino; 0 nos outros).
+    // Texto em UTF-8 escrito em hex (pode ter espaco e acento), ate 1000 bytes.
+    // A resposta so confirma a fila: quem chama confere a mensagem no chat. Tag
+    // propria (nao SKIL): no engine antigo uma tag desconhecida so devolve o
+    // jogador, enquanto um SKIL desconhecido liga ou desliga a caca.
+    if (tag == "CHAT" && g_ready) {
+        std::vector<std::string> w = split_words(body);
+        if (w.size() != 3) return "{\"ok\":false,\"erro\":\"uso: CHAT canal roleid hex\"}";
+        int ch = std::atoi(w[0].c_str());
+        if (ch != 1 && ch != 2 && ch != 3 && ch != 7) return "{\"ok\":false,\"erro\":\"canal: 1 2 3 7\"}";
+        uint64_t to = std::strtoull(w[1].c_str(), nullptr, 10);
+        if (ch == 3 && to == 0) return "{\"ok\":false,\"erro\":\"privado sem destino\"}";
+        const std::string& hx = w[2];
+        Action act{};
+        if (hx.empty() || hx.size() % 2 || hx.size() / 2 >= sizeof(act.say))
+            return "{\"ok\":false,\"erro\":\"texto vazio ou longo demais\"}";
+        for (size_t i = 0; i < hx.size(); i += 2) {
+            unsigned v = 0;
+            if (std::sscanf(hx.c_str() + i, "%2x", &v) != 1 || v == 0)
+                return "{\"ok\":false,\"erro\":\"hex invalido\"}";
+            act.say[i / 2] = (char)v;
+        }
+        act.type = 2; act.method = 15; act.a1 = ch; act.say_to = to;
+        {
+            std::lock_guard<std::mutex> lk(g_queue_mu);
+            g_queue.push_back(act);
+            g_has_actions = true;
+        }
+        return "{\"ok\":true,\"say\":true}";
     }
     if (tag == "SKIL" && g_boot_ready) {
         // Liga/desliga o auto-hunt. Default (corpo "1"/"0" ou {"on":N}):
