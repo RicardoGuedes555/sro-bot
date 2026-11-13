@@ -37,7 +37,7 @@ import { runFirm, stopFirm } from "./firm";
 import type { GuildConfig } from "../controller/guild";
 import { runGuild, stopGuild } from "./guild";
 import type { GuildBossConfig } from "../controller/guildboss";
-import { runGuildBoss, stopGuildBoss } from "./guildboss";
+import { isGuildBossOpen, runGuildBoss, stopGuildBoss } from "./guildboss";
 import type { CardAlbumConfig } from "../controller/cardalbum";
 import { getLastAlbumSnapshot, previewCardAlbum, runCardAlbum, setCardAlbumDir, stopCardAlbum } from "./cardalbum";
 import { runActChests } from "./actchest";
@@ -427,6 +427,8 @@ ipcMain.handle("engine:guildboss", async (_e, cfg: GuildBossConfig) => {
   const push = (m: string) => win?.webContents.send("sro:log", "[guildboss] " + m);
   return runGuildBoss("127.0.0.1", HOST_PORT, cfg, push);
 });
+
+ipcMain.handle("engine:guildbossopen", async () => isGuildBossOpen("127.0.0.1", HOST_PORT));
 
 ipcMain.handle("engine:guildbossstop", async () => {
   stopGuildBoss();

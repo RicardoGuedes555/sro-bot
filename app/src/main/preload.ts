@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("sro", {
   runGuildBoss: (cfg: { enabled: boolean; goldBuffsMax: number; dodgeSupreme: boolean; autoFight: boolean }) =>
     ipcRenderer.invoke("engine:guildboss", cfg),
   stopGuildBoss: () => ipcRenderer.invoke("engine:guildbossstop"),
+  guildBossOpen: () => ipcRenderer.invoke("engine:guildbossopen"),
   chat: (key: string, sinceId: number) => ipcRenderer.invoke("engine:chat", key, sinceId),
   chatSend: (key: string, text: string, to?: string) => ipcRenderer.invoke("engine:chatsend", key, text, to),
   inject: () => ipcRenderer.invoke("engine:inject"),

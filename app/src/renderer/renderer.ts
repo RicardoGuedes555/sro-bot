@@ -119,6 +119,7 @@ declare global {
       stopGuild: () => Promise<void>;
       runGuildBoss: (cfg: GuildBossUiConfig) => Promise<{ ok: boolean; erro?: string }>;
       stopGuildBoss: () => Promise<void>;
+      guildBossOpen: () => Promise<boolean>;
       previewCardAlbum: (cfg: CardAlbumUiConfig) => Promise<{
         ok: boolean;
         erro?: string;
@@ -825,6 +826,8 @@ async function runGuildBossActivityInner(): Promise<boolean> {
   if (r.ok) {
     setGbStatus("concluido", "bg-ink-600 text-ok");
     log("Guild Boss concluido.");
+  } else if (r.erro === "fechado") {
+    setGbStatus("aguardando abertura", "bg-ink-600 text-muted");
   } else if (r.erro === "parado") {
     setGbStatus("parado", "bg-ink-600 text-muted");
     log("Guild Boss parado.");
@@ -993,6 +996,11 @@ async function maybeRunGuildBoss(): Promise<void> {
   gbLastRunAt = Date.now();
   gbBusy = true;
   try {
+    // Fechado (quase o dia todo): nao para o Treino nem mexe na party.
+    if (!(await window.sro.guildBossOpen().catch(() => false))) {
+      setGbStatus("aguardando abertura", "bg-ink-600 text-muted");
+      return;
+    }
     const wasTraining = trainRunning;
     if (wasTraining) {
       if (!(await stopTrainLoop())) return;
@@ -2014,7 +2022,11 @@ async function onActivityToggle(id: string): Promise<void> {
       if (polling && isChecked("act-train")) resumeTrainLater("da torre");
     }
   } else if (id === "act-guildboss" && on) {
-    if (await waitInWorld()) {
+    if (!(await waitInWorld())) return;
+    if (!(await window.sro.guildBossOpen().catch(() => false))) {
+      log("Guild Boss fechado agora: o bot entra sozinho quando abrir (20:00 do servidor).");
+      setGbStatus("aguardando abertura", "bg-ink-600 text-muted");
+    } else {
       if (trainRunning) await stopTrainLoop();
       if (polling && (await runGuildBossActivity())) markDone("act-guildboss");
       if (polling && isChecked("act-train")) resumeTrainLater("do Guild Boss");

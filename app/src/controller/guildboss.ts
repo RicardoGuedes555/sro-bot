@@ -62,7 +62,8 @@ export type GuildBossStep =
   | { kind: "wait"; reason: string }
   | { kind: "act"; id: string; name: string; tag: string; body: string }
   | { kind: "move"; name: string; pos: [number, number, number] }
-  | { kind: "fail"; reason: string };
+  | { kind: "fail"; reason: string }
+  | { kind: "closed"; reason: string }; // evento fechado: nada a fazer agora (nem sair da party)
 
 export function isBossActive(s: GuildBossSnapshot): boolean {
   return s.inBossScene || s.bossOpen;
@@ -145,7 +146,12 @@ export function nextGuildBossStep(
     return { kind: "wait", reason: "em batalha contra o Guild Boss..." };
   }
 
-  // 2. Fora da arena do Guild Boss
+  // 2. Fora da arena do Guild Boss. Com o evento fechado nao mexe em nada: sair
+  // da party ou esperar aqui travaria o Treino e a party o dia todo.
+  if (!isBossActive(s)) {
+    return { kind: "closed", reason: "Guild Boss fechado agora (abre as 20:00 do servidor)" };
+  }
+
   if (s.inTeam && !tried.has("leave-team")) {
     return {
       kind: "act",
@@ -154,11 +160,6 @@ export function nextGuildBossStep(
       tag: "SKIL",
       body: LEAVE_TEAM_BODY,
     };
-  }
-
-  // Se o evento ainda nao abriu (abre as 20:00 do servidor)
-  if (!s.bossOpen && s.timeLeft <= 0) {
-    return { kind: "wait", reason: "aguardando abertura do Guild Boss (20:00 do servidor)..." };
   }
 
   // Abre janela do boss e entra
@@ -187,6 +188,14 @@ export function nextGuildBossStep(
 }
 
 export type EngineQuery = (tag: string, body: string) => Promise<Record<string, unknown>>;
+
+// Leitura rapida pro painel: o evento esta aberto (ou o char ja esta na arena)?
+// Antes de parar o Treino o app pergunta isso.
+export async function guildBossOpenNow(q: EngineQuery): Promise<boolean> {
+  const sc = await q("GETP", "XScene get_SceneID");
+  if (typeof sc.int === "number" && isBossScene(sc.int)) return true;
+  return (await q("GETP", "XWorldBossDocument MainInterfaceState")).bool === true;
+}
 
 export async function readGuildBossSnapshot(q: EngineQuery): Promise<GuildBossSnapshot | null> {
   const conn = await q("CONN", "");

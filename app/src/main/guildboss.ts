@@ -3,6 +3,7 @@
 
 import {
   type GuildBossConfig,
+  guildBossOpenNow,
   nextGuildBossStep,
   readGuildBossSnapshot,
 } from "../controller/guildboss";
@@ -17,6 +18,10 @@ let stopRequested = false;
 
 export function stopGuildBoss(): void {
   stopRequested = true;
+}
+
+export async function isGuildBossOpen(host: string, port: number): Promise<boolean> {
+  return guildBossOpenNow((tag, body) => sendCommand(host, port, tag, body)).catch(() => false);
 }
 
 export async function runGuildBoss(
@@ -50,6 +55,11 @@ export async function runGuildBoss(
     if (step.kind === "done") {
       log(`Guild Boss: ${step.reason}`);
       return { ok: true };
+    }
+
+    if (step.kind === "closed") {
+      log(`Guild Boss: ${step.reason}`);
+      return { ok: false, erro: "fechado" };
     }
 
     if (step.kind === "fail") {

@@ -58,9 +58,12 @@ test("fora da arena abre o painel e entra pelo Challenge", () => {
   }
 });
 
-test("se o evento estiver fechado aguarda horario oficial", () => {
-  const step = nextGuildBossStep(baseSnap({ bossOpen: false, timeLeft: 0 }), DEFAULT_GUILD_BOSS_CONFIG);
-  assert.equal(step.kind, "wait");
+test("evento fechado: para na hora e nao sai da party", () => {
+  const step = nextGuildBossStep(baseSnap({ bossOpen: false, timeLeft: 0, inTeam: true }), DEFAULT_GUILD_BOSS_CONFIG);
+  assert.equal(step.kind, "closed");
+  // ja na arena conta como aberto (o painel pode ter fechado)
+  const inArena = nextGuildBossStep(baseSnap({ bossOpen: false, inBossScene: true, sceneId: 2200 }), DEFAULT_GUILD_BOSS_CONFIG);
+  assert.notEqual(inArena.kind, "closed");
 });
 
 test("dentro da arena: combate e tela de recompensa ao finalizar", () => {
