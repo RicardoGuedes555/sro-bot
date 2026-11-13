@@ -53,8 +53,11 @@ import { type EngineQuery, SAME_ACTION_COOLDOWN_MS } from "./tower";
 import { LEAVE_DEFEND_HP_PCT, LEAVE_MIN_HP_PCT } from "./train";
 import type { CardAlbumSnapshot, CardGroupState } from "./cardalbum";
 
+export type BuildFocus = "all" | "int" | "str";
+
 export interface ContinentalConfig {
   mapId: number; // 0 = auto nivel; -1 = auto cards; 1..7 = mapa fixo
+  buildFocus?: BuildFocus; // all = equilibrado; int = priorizar magia/INT; str = priorizar fisico/STR
   ignoreGreen: boolean; // CHK_GREEN
   ignoreBlue: boolean; // CHK_BLUE
   restartWhenStuck: boolean; // CHK_RESTART: "Stuck in the activity for too long => Quit the game"
@@ -111,6 +114,7 @@ export function rankContinentalMapsByAlbum(
   groups: readonly CardGroupState[],
   ownedCounts: ReadonlyMap<number, number> | undefined,
   playerLevel: number,
+  buildFocus: BuildFocus = "all",
 ): ContinentalMapScore[] {
   const open = CONTINENTAL_MAPS.filter((m) => playerLevel >= m.level);
   if (!open.length) return [];
@@ -194,6 +198,15 @@ export function rankContinentalMapsByAlbum(
       if (reqBreak && playerLevel < reqBreak) score *= 0.5;
     }
 
+    // Modificador de afinidade de build:
+    // No Silkroad, grupos impares (1 Beginning, 3 Master, 5 Convergence) tem forte presenca
+    // de atributos elementais/magicos; pares (2 Discover, 4 Hell, 6 Revelation) enfatizam fisico/STR.
+    if (buildFocus === "int") {
+      if (map.id % 2 === 1) score *= 1.35;
+    } else if (buildFocus === "str") {
+      if (map.id % 2 === 0) score *= 1.35;
+    }
+
     scores.push({
       mapId: map.id,
       name: map.name,
@@ -210,7 +223,7 @@ export function rankContinentalMapsByAlbum(
 
 // Mapa da sessao: o fixo da config, o automatico por cards ou por nivel.
 export function continentalMapFor(
-  cfg: Pick<ContinentalConfig, "mapId" | "albumSnapshot">,
+  cfg: Pick<ContinentalConfig, "mapId" | "albumSnapshot" | "buildFocus">,
   level: number,
 ): number {
   if (cfg.mapId === CONTINENTAL_AUTO_CARDS && cfg.albumSnapshot?.tablesLoaded) {
@@ -218,6 +231,7 @@ export function continentalMapFor(
       cfg.albumSnapshot.groups,
       cfg.albumSnapshot.ownedCounts,
       level,
+      cfg.buildFocus ?? "all",
     );
     if (ranked.length && ranked[0].score > 0) {
       return ranked[0].mapId;

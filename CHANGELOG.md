@@ -1,9 +1,17 @@
-# Changelog
+﻿# Changelog
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Uma linha por versao com o que ela trouxe.
 
 ## [Nao lancado]
 
+## [0.147.0] - 2026-11-12
+
+- **App:** Continental com **Foco de Build (INT vs STR)** no seletor de mapas:
+  alem de priorizar cards faltantes, o bot agora favorece os mapas que dao os atributos
+  da build do seu personagem (Build INT prioriza monstros e grupos com dano magico e elemental;
+  Build STR prioriza grupos de dano fisico e atributos STR).
+- **Docs:** arquivo MELHORIAS.txt na raiz detalhando o funcionamento matematico do seletor
+  por cards e a relacao de cada mapa com as builds do jogo.
 - **App:** Continental com a regiao **Automatico por cards**: escolhe o mapa cujos cards mais faltam no Album de Cards pra fechar combinacoes e subir estrela (grupo no maximo nao gasta dado; sem leitura do album, cai no automatico por nivel). A leitura do album fica guardada pra rodada usar, e cada passada de baus pede uma nova analise do album. A rodada de dados continua na agenda de sempre.
 
 ## [0.146.1] - 2026-11-12
@@ -24,7 +32,7 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 - **App:** aba **Mapa**, a visao de cima ao vivo do que esta em volta do char: voce no centro (norte pra cima), monstros com nivel e barra de HP (elite e chefe em cores proprias; Champion e Giant contam como elite pelo nome, porque o jogo nao os marca), o alvo atual marcado e ligado por uma linha, outros jogadores e a party com nome e nivel, NPCs e pets, itens no chao, os pontos de caca salvos com o raio, grade em metros, zoom e radar de 120 m. O topo mostra o mapa, o canal e as contagens. So le com a aba aberta e o jogo conectado.
 - **Engine:** comando `ENTS`, que entrega numa consulta o jogador, o alvo do auto-play, as entidades ate 150 m (tipo, nivel, HP, nome em UTF-8) e os itens no chao. Sem ele (engine antigo), o mapa usa uma leitura mais lenta pelo GETP a cada 20 s, sem HP e sem itens no chao. O engine novo entra quando o jogo e reaberto pelo app. Provado no jogo: no ponto 74-76 o `ENTS` leu os mesmos 17 monstros que o GETP em 11 a 47 ms, contra 3 a 5 s.
 - **App:** botao **Exportar diagnostico** (Ferramentas > Diagnostico): gera um `.txt` com versoes, configuracao (pasta de dados e painel), historico de 24 h e o log, pra mandar quando algo der errado. Senha, token e chaves ficam de fora: os `.bin` e a VPN nao entram, campo com nome de segredo ou de chat vira `***` e o texto perde o que tem formato de token do Telegram, chave de API ou chave WireGuard.
-- **App:** atividade **Álbum de Cards** (Atividades > Álbum de Cards), por metodo e rodando mesmo cacando: ativa as combinacoes prontas, sobe a estrela do grupo quando completa e, se marcado, quebra so as cartas que sobram acima do total que ainda vai usar ate a estrela maxima de todos os grupos. Escolhe as raridades que podem ser quebradas (por padrao so C e B) e o grupo alvo; "Analisar cards" mostra o que faria sem mexer em nada. Os testes do modulo passam a rodar no `npm test` e no CI.
+- **App:** atividade **Ãlbum de Cards** (Atividades > Ãlbum de Cards), por metodo e rodando mesmo cacando: ativa as combinacoes prontas, sobe a estrela do grupo quando completa e, se marcado, quebra so as cartas que sobram acima do total que ainda vai usar ate a estrela maxima de todos os grupos. Escolhe as raridades que podem ser quebradas (por padrao so C e B) e o grupo alvo; "Analisar cards" mostra o que faria sem mexer em nada. Os testes do modulo passam a rodar no `npm test` e no CI.
 
 ## [0.144.0] - 2026-11-12
 
@@ -67,11 +75,11 @@ Primeira versao publicada em Releases: EXE portatil para Windows com o engine de
 
 ## [0.139.0] - 2026-11-11
 
-- **App:** a IA busca sozinha os modelos do Gemini e troca para um que exista; o campo Modelo vazio é automático; o erro de tempo esgotado ficou claro.
+- **App:** a IA busca sozinha os modelos do Gemini e troca para um que exista; o campo Modelo vazio Ã© automÃ¡tico; o erro de tempo esgotado ficou claro.
 
 ## [0.138.0] - 2026-11-10
 
-- **App:** o card "Grátis do dia" ganha a opção "Doar no Support da guilda".
+- **App:** o card "GrÃ¡tis do dia" ganha a opÃ§Ã£o "Doar no Support da guilda".
 
 ## [0.137.1] - 2026-11-10
 
@@ -83,15 +91,15 @@ Primeira versao publicada em Releases: EXE portatil para Windows com o engine de
 
 ## [0.136.0] - 2026-11-10
 
-- **App:** o card "Grátis do dia" pega os red envelopes do Lucky Money da guilda, conferindo a cada 5 min na janela das 09:00 às 11:15.
+- **App:** o card "GrÃ¡tis do dia" pega os red envelopes do Lucky Money da guilda, conferindo a cada 5 min na janela das 09:00 Ã s 11:15.
 
 ## [0.135.0] - 2026-11-10
 
-- **App:** o Firm conclui o dia (Submit) e pega o prêmio total com 3 ou mais entregas; o card "Grátis do dia" abre os baús do sign-in da guilda ao longo do dia.
+- **App:** o Firm conclui o dia (Submit) e pega o prÃªmio total com 3 ou mais entregas; o card "GrÃ¡tis do dia" abre os baÃºs do sign-in da guilda ao longo do dia.
 
 ## [0.134.0] - 2026-11-10
 
-- **App:** card "Grátis do dia" pega sozinho os pacotes grátis do Event (Premium Shop), o attendance do Welfare com os prêmios acumulados e a caixinha grátis do Daily Pack.
+- **App:** card "GrÃ¡tis do dia" pega sozinho os pacotes grÃ¡tis do Event (Premium Shop), o attendance do Welfare com os prÃªmios acumulados e a caixinha grÃ¡tis do Daily Pack.
 
 ## [0.133.0] - 2026-11-10
 
@@ -115,7 +123,7 @@ Primeira versao publicada em Releases: EXE portatil para Windows com o engine de
 
 ## [0.128.0] - 2026-11-09
 
-- **App:** nova atividade "Baús de atividade diária": pega os baús de 30, 60, 90, 120 e 150 pontos assim que liberam.
+- **App:** nova atividade "BaÃºs de atividade diÃ¡ria": pega os baÃºs de 30, 60, 90, 120 e 150 pontos assim que liberam.
 
 ## [0.127.0] - 2026-11-09
 

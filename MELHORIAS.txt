@@ -1,0 +1,27 @@
+﻿================================================================================
+                    SRO BOT - RESUMO DAS MELHORIAS (v0.147.0)
+================================================================================
+
+1. FOCO DE BUILD NO CONTINENTAL EXPLORATION (INT vs STR)
+--------------------------------------------------------------------------------
+- Nova opcao no painel do Continental: "Foco de Build":
+    * "Equilibrado / Qualquer": pontuacao padrao por cards pendentes.
+    * "Build INT (Magia / Elemental)": prioriza os grupos impares do Album
+      (1 Beginning, 3 Master, 5 Convergence), focados em magia e elementos (+35% no score).
+    * "Build STR (Fisico / Critico)": prioriza os grupos pares do Album
+      (2 Discover, 4 Hell, 6 Revelation), focados em ataque fisico e atributos STR (+35% no score).
+- O algoritmo rankContinentalMapsByAlbum cruza a afinidade da build escolhida com os
+  cards faltantes para escolher o mapa que mais fortalece a build do personagem.
+
+2. INTEGRACAO DO ALBUM DE CARDS & MAPAS DO CONTINENTAL
+--------------------------------------------------------------------------------
+- Cruzamento 1:1 exato entre os 7 Mapas do Continental e os 7 Grupos do Album:
+    Mapa 1 (Chinese)        -> Grupo 1 (Beginning)
+    Mapa 2 (Hotan)          -> Grupo 2 (Discover)
+    Mapa 3 (Desert)         -> Grupo 3 (Master)
+    Mapa 4 (Roc Mountain)   -> Grupo 4 (Hell)
+    Mapa 5 (Eastern Europe) -> Grupo 5 (Convergence)
+    Mapa 6 (Asia Minor)     -> Grupo 6 (Revelation)
+    Mapa 7 (Central Asia)   -> Grupo 7 (New Origin)
+- Mapas que atingiram StarLevelMAX recebem pontuacao zero para evitar desperdicio de dados.
+- Mapas onde faltam 1 a 3 cards para fechar estrelas pendentes recebem prioridade maxima.
