@@ -44,32 +44,17 @@ test("se estiver em equipe, sai da party primeiro", () => {
   }
 });
 
-test("compra buffs por gold ate o limite configurado antes de entrar", () => {
-  const cfg = { ...DEFAULT_GUILD_BOSS_CONFIG, goldBuffsMax: 3 };
-  const step0 = nextGuildBossStep(baseSnap({ goldBuffCount: 0 }), cfg);
-  assert.equal(step0.kind, "act");
-  if (step0.kind === "act") assert.equal(step0.id, "buff-0");
+test("fora da arena abre o painel e entra pelo Challenge", () => {
+  const stepOpen = nextGuildBossStep(baseSnap(), DEFAULT_GUILD_BOSS_CONFIG);
+  assert.equal(stepOpen.kind, "act");
+  if (stepOpen.kind === "act") assert.equal(stepOpen.id, "open-view");
 
-  const step2 = nextGuildBossStep(baseSnap({ goldBuffCount: 2 }), cfg);
-  assert.equal(step2.kind, "act");
-  if (step2.kind === "act") assert.equal(step2.id, "buff-2");
-
-  // Atingiu o limite (3): vai para a entrada da arena
-  const step3 = nextGuildBossStep(baseSnap({ goldBuffCount: 3 }), cfg);
-  assert.equal(step3.kind, "act");
-  if (step3.kind === "act") {
-    assert.equal(step3.id, "enter");
-    assert.equal(step3.body, ENTER_BOSS_BODY);
-  }
-});
-
-test("se nao tiver gold suficiente para o buff, pula a compra e entra no boss", () => {
-  const cfg = { ...DEFAULT_GUILD_BOSS_CONFIG, goldBuffsMax: 3 };
-  const step = nextGuildBossStep(baseSnap({ goldBuffCount: 0, gold: 500 }), cfg);
-  assert.equal(step.kind, "act");
-  if (step.kind === "act") {
-    assert.equal(step.id, "enter");
-    assert.equal(step.body, ENTER_BOSS_BODY);
+  const triedOpen = new Set(["open-view"]);
+  const stepEnter = nextGuildBossStep(baseSnap(), DEFAULT_GUILD_BOSS_CONFIG, triedOpen);
+  assert.equal(stepEnter.kind, "act");
+  if (stepEnter.kind === "act") {
+    assert.equal(stepEnter.id, "enter");
+    assert.equal(stepEnter.body, ENTER_BOSS_BODY);
   }
 });
 

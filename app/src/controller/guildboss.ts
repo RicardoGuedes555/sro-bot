@@ -11,14 +11,19 @@
 //   Zona Segura (Wipe)   -> XSafeZoneDocument get_IsInSafeRegion / PtcG2C_OpenSafeZoneGuildBoss
 //   Fim / Recompensa     -> LevelRewardGuildBossHandler OnContinueClick
 
-export const GUILD_BOSS_SCENE_ID = 2200;
-export const GUILD_BUFF_GOLD_COST = 10000;
+export const GUILD_BOSS_SCENE_ID = 5;
+export const GUILD_BOSS_TEMPLATE_ID = 2200;
+export const GUILD_BUFF_GOLD_COST = 20000;
 
-export const LEAVE_TEAM_BODY = "callp XTeamView _MyTeamHandler _DoLeaveFromTeam 1";
-export const ENTER_BOSS_BODY = "callsn XWorldBossDocument ReqEnterWorldBossScene";
-export const ENTER_BOSS_VIEW_BTN = "callp XWorldBossView OnGoBattleClick 1";
+export const LEAVE_TEAM_BODY = "callx XTeamDocument ReqTeamOp 7 -- i:3 q:0 n i:1 s: i:0 u:0";
+export const OPEN_BOSS_VIEW_BODY = "callp XWorldBossView ShowView 0";
+export const ENTER_BOSS_BODY = "callp XWorldBossView OnGoBattleClick 1";
 export const BUY_GUILD_BUFF_BODY = "callsn XWorldBossDocument ReqEncourageTwo";
-export const EXIT_REWARD_BODY = "callp LevelRewardGuildBossHandler OnContinueClick 1";
+export const EXIT_REWARD_BODY = "callp XLevelRewardView _DlgHandler OnContinueClick 1";
+
+export function isBossScene(sceneId: number): boolean {
+  return sceneId === GUILD_BOSS_SCENE_ID || sceneId === GUILD_BOSS_TEMPLATE_ID;
+}
 
 export interface GuildBossConfig {
   enabled: boolean;
@@ -125,7 +130,9 @@ export function nextGuildBossStep(
     }
 
     // Combate regular dentro da arena
-    if (cfg.autoFight && !s.autoPlay && !s.wipeActive && !tried.has("autofight")) {
+    // Quando morre no boss e renasce do countdown, o jogo mantem auto-play desligado;
+    // o bot reativa auto-play continuamente toda vez que estiver vivo com auto-play off.
+    if (cfg.autoFight && !s.autoPlay && !s.wipeActive) {
       return {
         kind: "act",
         id: "autofight",
@@ -154,40 +161,25 @@ export function nextGuildBossStep(
     return { kind: "wait", reason: "aguardando abertura do Guild Boss (20:00 do servidor)..." };
   }
 
-  // Compra buffs por gold antes de entrar, se configurado
-  if (
-    cfg.goldBuffsMax > 0 &&
-    s.goldBuffCount < cfg.goldBuffsMax &&
-    s.gold >= GUILD_BUFF_GOLD_COST &&
-    !tried.has(`buff-${s.goldBuffCount}`)
-  ) {
+  // Abre janela do boss e entra
+  if (!tried.has("open-view")) {
     return {
       kind: "act",
-      id: `buff-${s.goldBuffCount}`,
-      name: `comprar buff da guilda por gold (${s.goldBuffCount + 1}/${cfg.goldBuffsMax})`,
+      id: "open-view",
+      name: "abrindo painel do Guild Boss",
       tag: "SKIL",
-      body: BUY_GUILD_BUFF_BODY,
+      body: OPEN_BOSS_VIEW_BODY,
     };
   }
 
-  // Entra na arena
+  // Entra na arena clicando em Challenge
   if (!tried.has("enter")) {
     return {
       kind: "act",
       id: "enter",
-      name: "entrando na arena do Guild Boss",
+      name: "entrando na arena do Guild Boss (Challenge)",
       tag: "SKIL",
       body: ENTER_BOSS_BODY,
-    };
-  }
-
-  if (!tried.has("enter-view")) {
-    return {
-      kind: "act",
-      id: "enter-view",
-      name: "confirmando entrada na arena do Guild Boss",
-      tag: "SKIL",
-      body: ENTER_BOSS_VIEW_BTN,
     };
   }
 
@@ -208,8 +200,9 @@ export async function readGuildBossSnapshot(q: EngineQuery): Promise<GuildBossSn
   const bool = async (body: string) => (await q("GETP", body)).bool === true;
 
   const sceneId = await int("XScene get_SceneID", -1);
-  const inBossScene = sceneId === GUILD_BOSS_SCENE_ID;
+  const inBossScene = isBossScene(sceneId);
   const bossOpen = await bool("XWorldBossDocument MainInterfaceState");
+  const dlgHandler = await int("XLevelRewardView _DlgHandler", 0);
 
   const s: GuildBossSnapshot = {
     inWorld: player.ok === true,
@@ -222,18 +215,11 @@ export async function readGuildBossSnapshot(q: EngineQuery): Promise<GuildBossSn
     goldBuffCount: await int("XWorldBossDocument get_EncourgeGuildCount", 0),
     inSafeRegion: await bool("XSafeZoneDocument get_IsInSafeRegion"),
     wipeActive: false,
-    rewardVisible: false,
+    rewardVisible: dlgHandler !== 0,
     dead: player.dead === true,
     autoPlay: player.autoPlayOn === true,
     gold: await int("XBagDocument GetItemCount:1,0", 0),
   };
-
-  if (inBossScene) {
-    // Checa tela de recompensa / encerramento
-    const activeHandler = await int("XLevelRewardView _DlgHandler", 0);
-    const bossHandler = await int("LevelRewardGuildBossHandler get_singleton", -1);
-    s.rewardVisible = activeHandler !== 0 && activeHandler === bossHandler;
-  }
 
   return s;
 }
