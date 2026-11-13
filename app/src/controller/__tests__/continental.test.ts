@@ -4,6 +4,8 @@ import { test } from "node:test";
 import {
   type BoxSlot,
   continentalMapFor,
+  CONTINENTAL_AUTO_CARDS,
+  rankContinentalMapsByAlbum,
   AimTracker,
   AIM_SETTLE_MS,
   ARENA_MAX_MS,
@@ -386,4 +388,86 @@ test("mapa automatico: o mais alto que o nivel do char libera (Lv.87 rolava no C
   // Tabuleiro do Chinese aberto com o automatico pedindo o Asia Minor: reabre pra trocar.
   const st = step(snap({ mapId: 1, level: 87 }), auto);
   assert.equal(st.kind === "act" && st.id, "reopen");
+});
+
+test("mapa automatico por cards: prioriza o mapa cujos cards faltam para fechar estrelas", () => {
+  const groupChinese = {
+    groupId: 1,
+    name: "Beginning",
+    currentStar: 0,
+    maxStar: 2,
+    actionNum: 0,
+    sets: [
+      {
+        setId: 101,
+        groupId: 1,
+        status: 2,
+        active: false,
+        canActive: false,
+        starRequirements: {
+          0: [{ cardId: 6001, count: 2 }],
+          1: [{ cardId: 6001, count: 4 }],
+          2: [{ cardId: 6001, count: 6 }],
+        },
+      },
+    ],
+  };
+
+  const groupHotan = {
+    groupId: 2,
+    name: "Discover",
+    currentStar: 2,
+    maxStar: 2,
+    actionNum: 10,
+    sets: [],
+  };
+
+  const groupDesert = {
+    groupId: 3,
+    name: "Master",
+    currentStar: 1,
+    maxStar: 2,
+    actionNum: 2,
+    sets: [
+      {
+        setId: 301,
+        groupId: 3,
+        status: 2,
+        active: false,
+        canActive: false,
+        starRequirements: {
+          1: [{ cardId: 6041, count: 5 }],
+          2: [{ cardId: 6041, count: 10 }],
+        },
+      },
+    ],
+  };
+
+  const owned = new Map<number, number>([
+    [6001, 1], // falta apenas 1 para fechar no Chinese (urgencia maxima)
+    [6041, 0], // faltam 5 no Desert
+  ]);
+
+  const ranked = rankContinentalMapsByAlbum([groupChinese, groupHotan, groupDesert], owned, 80);
+  assert.ok(ranked.length >= 3);
+  // Chinese (id 1) deve vir em 1º lugar porque falta só 1 carta para fechar o set atual
+  assert.equal(ranked[0].mapId, 1);
+  assert.ok(ranked[0].score > ranked[1].score);
+  // Hotan (id 2) ja esta no maximo (currentStar === maxStar), entao score 0
+  const hotanScore = ranked.find((r) => r.mapId === 2);
+  assert.equal(hotanScore?.score, 0);
+
+  // continentalMapFor com CONTINENTAL_AUTO_CARDS escolhe o mapa de maior score
+  const cfgAutoCards = {
+    ...DEFAULT_CONTINENTAL_CONFIG,
+    mapId: CONTINENTAL_AUTO_CARDS,
+    albumSnapshot: {
+      inWorld: true,
+      tablesLoaded: true,
+      groups: [groupChinese, groupHotan, groupDesert],
+      ownedCounts: owned,
+      cardMeta: new Map(),
+    },
+  };
+  assert.equal(continentalMapFor(cfgAutoCards, 80), 1);
 });

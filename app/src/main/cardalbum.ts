@@ -9,6 +9,7 @@ import path from "node:path";
 import {
   canUpgradeGroupStar,
   type CardAlbumConfig,
+  type CardAlbumSnapshot,
   type CardSurplusItem,
   computeCardSurplus,
   createCardStaticCache,
@@ -30,6 +31,11 @@ const MAX_STEPS = 80;
 let stopRequested = false;
 let cacheFile = "";
 let staticCache = createCardStaticCache();
+let lastAlbumSnapshot: CardAlbumSnapshot | null = null;
+
+export function getLastAlbumSnapshot(): CardAlbumSnapshot | null {
+  return lastAlbumSnapshot;
+}
 
 export function setCardAlbumDir(dir: string): void {
   cacheFile = path.join(dir, "cardalbum-cache.json");
@@ -82,6 +88,7 @@ export async function previewCardAlbum(
       log("nao foi possivel carregar todo o album de cards (leitura incompleta; nada quebrado).");
       return { ok: false, erro: "tabelas do album incompletas" };
     }
+    lastAlbumSnapshot = s;
     saveCache();
     const surplus = computeCardSurplus(s, cfg);
     let readySets = 0;
@@ -132,7 +139,10 @@ export async function runCardAlbum(
         return { ok: false, erro: "parado", activated, upgraded, broken };
       }
       const s = await readCardAlbumSnapshot(client.request, staticCache);
-      if (s?.tablesLoaded) saveCache();
+      if (s?.tablesLoaded) {
+        lastAlbumSnapshot = s;
+        saveCache();
+      }
       const step = nextCardAlbumStep(s, cfg, tried);
       if (step.kind === "done") {
         const surplus = s ? computeCardSurplus(s, cfg) : [];

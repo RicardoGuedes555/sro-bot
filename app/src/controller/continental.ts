@@ -51,9 +51,10 @@
 
 import { type EngineQuery, SAME_ACTION_COOLDOWN_MS } from "./tower";
 import { LEAVE_DEFEND_HP_PCT, LEAVE_MIN_HP_PCT } from "./train";
+import type { CardAlbumSnapshot, CardGroupState } from "./cardalbum";
 
 export interface ContinentalConfig {
-  mapId: number; // 0 = automatico (o mais alto que o nivel do char libera); 1..7 = mapa fixo
+  mapId: number; // 0 = auto nivel; -1 = auto cards; 1..7 = mapa fixo
   ignoreGreen: boolean; // CHK_GREEN
   ignoreBlue: boolean; // CHK_BLUE
   restartWhenStuck: boolean; // CHK_RESTART: "Stuck in the activity for too long => Quit the game"
@@ -62,6 +63,7 @@ export interface ContinentalConfig {
   // Rolando no ponto de caca com a caca ligada: so comeca com HP alto, desiste
   // se o HP cair (fora da arena) e nunca pede pra reiniciar o jogo.
   atSpot?: boolean;
+  albumSnapshot?: CardAlbumSnapshot | null;
 }
 
 // Ficam de fora de proposito: CHK_NORMAL_REWARD (so faz sentido mirando o dado)
@@ -91,12 +93,141 @@ export const CONTINENTAL_MAPS: { id: number; name: string; level: number }[] = [
 ];
 
 export const CONTINENTAL_AUTO_MAP = 0;
+export const CONTINENTAL_AUTO_CARDS = -1;
 
-// Mapa da sessao: o fixo da config ou, no automatico, o mais alto que o nivel
-// do char libera (o char Lv.87 rolava no Chinese Lv.30 com a config antiga).
-// Nivel nao lido: o primeiro mapa (liberado pra todo char que chega no Continental).
-export function continentalMapFor(cfg: Pick<ContinentalConfig, "mapId">, level: number): number {
-  if (cfg.mapId !== CONTINENTAL_AUTO_MAP) return cfg.mapId;
+export interface ContinentalMapScore {
+  mapId: number;
+  name: string;
+  level: number;
+  score: number;
+  neededTotal: number;
+  urgentSets: number;
+}
+
+// Avalia os mapas liberados pelo nivel do personagem com base no Album de Cards.
+// Mapa i alimenta o Grupo de Cards i (Chinese -> 1 Beginning, Hotan -> 2 Discover, ...).
+// Da nota maior para mapas cujos cards faltam para fechar combinacoes ou subir estrela.
+export function rankContinentalMapsByAlbum(
+  groups: readonly CardGroupState[],
+  ownedCounts: ReadonlyMap<number, number> | undefined,
+  playerLevel: number,
+): ContinentalMapScore[] {
+  const open = CONTINENTAL_MAPS.filter((m) => playerLevel >= m.level);
+  if (!open.length) return [];
+
+  const groupById = new Map<number, CardGroupState>();
+  for (const g of groups) groupById.set(g.groupId, g);
+
+  const scores: ContinentalMapScore[] = [];
+
+  for (const map of open) {
+    const g = groupById.get(map.id);
+    if (!g) {
+      scores.push({
+        mapId: map.id,
+        name: map.name,
+        level: map.level,
+        score: 1, // sem dados do grupo: nota minima
+        neededTotal: 0,
+        urgentSets: 0,
+      });
+      continue;
+    }
+
+    // Grupo ja completou a estrela maxima: score 0 (nao gasta dados aqui)
+    if (g.currentStar >= g.maxStar) {
+      scores.push({
+        mapId: map.id,
+        name: map.name,
+        level: map.level,
+        score: 0,
+        neededTotal: 0,
+        urgentSets: 0,
+      });
+      continue;
+    }
+
+    let neededTotal = 0;
+    let urgentSets = 0;
+    let score = 0;
+
+    for (const set of g.sets) {
+      // Confere os requisitos da estrela atual do grupo
+      const reqsCurrent = set.starRequirements[g.currentStar];
+      if (reqsCurrent && !set.active) {
+        let missingInSet = 0;
+        for (const req of reqsCurrent) {
+          if (req.cardId <= 0 || req.count <= 0) continue;
+          const owned = ownedCounts?.get(req.cardId) ?? 0;
+          const missing = Math.max(0, req.count - owned);
+          missingInSet += missing;
+          neededTotal += missing;
+        }
+        if (missingInSet > 0) {
+          // Poucas cartas pra fechar a combinacao (1 a 3) ganham prioridade maxima
+          if (missingInSet <= 3) {
+            urgentSets++;
+            score += 100 / missingInSet;
+          } else {
+            score += 15;
+          }
+        }
+      }
+
+      // Requisitos das estrelas futuras ate StarLevelMAX
+      for (let st = g.currentStar + 1; st <= g.maxStar; st++) {
+        const reqsFuture = set.starRequirements[st];
+        if (!reqsFuture) continue;
+        for (const req of reqsFuture) {
+          if (req.cardId <= 0 || req.count <= 0) continue;
+          const owned = ownedCounts?.get(req.cardId) ?? 0;
+          const missing = Math.max(0, req.count - owned);
+          neededTotal += missing;
+          score += missing > 0 ? 5 : 0;
+        }
+      }
+    }
+
+    // Se o grupo estiver travado por nivel de quebra (breakLevel) acima do char, reduz peso
+    if (g.breakLevels && g.currentStar < g.breakLevels.length) {
+      const reqBreak = g.breakLevels[g.currentStar];
+      if (reqBreak && playerLevel < reqBreak) score *= 0.5;
+    }
+
+    scores.push({
+      mapId: map.id,
+      name: map.name,
+      level: map.level,
+      score: Math.round(score * 10) / 10,
+      neededTotal,
+      urgentSets,
+    });
+  }
+
+  // Ordena pelo maior score, depois pelo mapa de nivel mais alto
+  return scores.sort((a, b) => b.score - a.score || b.level - a.level);
+}
+
+// Mapa da sessao: o fixo da config, o automatico por cards ou por nivel.
+export function continentalMapFor(
+  cfg: Pick<ContinentalConfig, "mapId" | "albumSnapshot">,
+  level: number,
+): number {
+  if (cfg.mapId === CONTINENTAL_AUTO_CARDS && cfg.albumSnapshot?.tablesLoaded) {
+    const ranked = rankContinentalMapsByAlbum(
+      cfg.albumSnapshot.groups,
+      cfg.albumSnapshot.ownedCounts,
+      level,
+    );
+    if (ranked.length && ranked[0].score > 0) {
+      return ranked[0].mapId;
+    }
+  }
+
+  if (cfg.mapId !== CONTINENTAL_AUTO_MAP && cfg.mapId !== CONTINENTAL_AUTO_CARDS) {
+    return cfg.mapId;
+  }
+
   const open = CONTINENTAL_MAPS.filter((m) => level >= m.level);
   return open.length ? open[open.length - 1].id : CONTINENTAL_MAPS[0].id;
 }

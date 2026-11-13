@@ -32,7 +32,7 @@ import { runFirm, stopFirm } from "./firm";
 import type { GuildConfig } from "../controller/guild";
 import { runGuild, stopGuild } from "./guild";
 import type { CardAlbumConfig } from "../controller/cardalbum";
-import { previewCardAlbum, runCardAlbum, setCardAlbumDir, stopCardAlbum } from "./cardalbum";
+import { getLastAlbumSnapshot, previewCardAlbum, runCardAlbum, setCardAlbumDir, stopCardAlbum } from "./cardalbum";
 import { runActChests } from "./actchest";
 import { runFreebies } from "./freebies";
 import { runGuildHallCheck, runQigongAccept, runQigongRequest, setQigongDir, setQigongObjvReader } from "./qigong";
@@ -300,7 +300,9 @@ ipcMain.handle("engine:towerstop", async () => {
 // Roda o Continental Exploration (por metodo, guiado por estado) com a config do painel.
 ipcMain.handle("engine:continental", async (_e, cfg: ContinentalConfig) => {
   const push = (m: string) => win?.webContents.send("sro:log", "[continental] " + m);
-  return runContinental("127.0.0.1", HOST_PORT, cfg, push);
+  const snap = getLastAlbumSnapshot();
+  const fullCfg: ContinentalConfig = snap ? { ...cfg, albumSnapshot: snap } : cfg;
+  return runContinental("127.0.0.1", HOST_PORT, fullCfg, push);
 });
 
 ipcMain.handle("engine:continentalstop", async () => {
