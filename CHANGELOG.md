@@ -4,6 +4,24 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 
 ## [Nao lancado]
 
+## [0.148.0] - 2026-11-13
+
+- **App:** atividade **Guild Boss (Chefe da Guilda)** automatizada sem coordenadas de tela:
+  sai da party se estiver em grupo (XTeamView _DoLeaveFromTeam), compra buffs de ouro ate
+  o limite configurado (ReqEncourageTwo e get_EncourgeGuildCount), entra na arena do chefe
+  (ReqEnterWorldBossScene / XWorldBossView OnGoBattleClick), detecta golpe supremo e desvia
+  para as zonas de seguranca (XSafeZoneDocument get_IsInSafeRegion), e coleta a recompensa
+  no encerramento (LevelRewardGuildBossHandler OnContinueClick).
+- **App:** Continental inteligente na checagem de baus raros:
+  ao encher os slots de baus, antes de parar o bot verifica se ha bau Roxo ou Dourado (Laranja)
+  nas casas a frente no tabuleiro (hasRareChestAhead). Se houver bau raro a frente, o bot
+  continua jogando os dados, e ao se aproximar de um bau Dourado com slots cheios de Roxos,
+  descarta 1 Roxo para abrir vaga e garantir a captura do Dourado.
+- **App:** correcao na Torre (Demon Locking Tower): desmarcar a opcao cancela a pendencia
+  no dia para permitir reexecucao manual, e o acionamento manual pausa o loop de treino
+  antes de executar para evitar concorrencia. Continental reduz tempo de espera com HP baixo
+  de 1 h para 1 min.
+
 ## [0.147.0] - 2026-11-12
 
 - **App:** Continental com **Foco de Build (INT vs STR)** no seletor de mapas:

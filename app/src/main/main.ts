@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -31,6 +31,8 @@ import type { FirmConfig } from "../controller/firm";
 import { runFirm, stopFirm } from "./firm";
 import type { GuildConfig } from "../controller/guild";
 import { runGuild, stopGuild } from "./guild";
+import type { GuildBossConfig } from "../controller/guildboss";
+import { runGuildBoss, stopGuildBoss } from "./guildboss";
 import type { CardAlbumConfig } from "../controller/cardalbum";
 import { getLastAlbumSnapshot, previewCardAlbum, runCardAlbum, setCardAlbumDir, stopCardAlbum } from "./cardalbum";
 import { runActChests } from "./actchest";
@@ -48,10 +50,7 @@ import { aiChat, type AppInfo, aiSnapshot, hasAiKey, loadAiSettings, providerMod
 import type { AiSettings, ChatMessage } from "../controller/ai";
 import { flushHistory, historySummary, initHistory, recordEvent, recordSample } from "./history";
 import type { HistEvent } from "../controller/history";
-import { diagnosticFileName } from "../controller/diagnostic";
-import { collectDiagnostic } from "./diagnostic";
 import { setupUpdater } from "./updater";
-import { isLocalizationKey, MAP_RADIUS_M, parseEnts, readMapGetp, readTeamIds } from "../controller/map";
 
 // Configuracao de caminhos (pasta do LDPlayer, instancia, adb) na pasta de dados.
 function settingsPath(): string {
@@ -156,48 +155,6 @@ ipcMain.handle("engine:setup", async () => {
 
 ipcMain.handle("engine:player", async () => {
   return queryPlayer("127.0.0.1", HOST_PORT);
-});
-
-// Mapa ao vivo (aba Mapa): uma leitura por chamada. ENTS quando o engine tem;
-// senao a leitura reserva pelo GETP. O time e o nome do mapa mudam pouco: o time
-// e relido a cada 30 s e o nome so quando a cena muda.
-let mapTeam = { ids: new Set<number>(), at: 0 };
-let mapScene = { id: -1, name: "" };
-const mapNames = new Map<string, string>();
-ipcMain.handle("engine:map", async () => {
-  const q = (tag: string, body: string) => sendCommand("127.0.0.1", HOST_PORT, tag, body);
-  if (Date.now() - mapTeam.at > 30000) mapTeam = { ids: await readTeamIds(q), at: Date.now() };
-  const r = await q("ENTS", String(MAP_RADIUS_M));
-  const snap = parseEnts(r, mapTeam.ids) ?? (await readMapGetp(q, mapTeam.ids));
-  if (!snap) return null;
-  // Nome de NPC vem como chave: traduz e guarda (no maximo 10 novas por leitura).
-  let fresh = 0;
-  for (const e of snap.ents) {
-    if (!isLocalizationKey(e.name)) continue;
-    if (!mapNames.has(e.name) && fresh++ < 10) {
-      const t = await q("GETP", `Localization Localize:"${e.name}"`);
-      mapNames.set(e.name, typeof t.str === "string" && t.str !== e.name ? t.str : "");
-    }
-    e.name = mapNames.get(e.name) ?? "";
-  }
-  const sc = await q("GETP", "XScene get_SceneID");
-  const scene = sc.ok === true && typeof sc.int === "number" ? sc.int : -1;
-  if (scene !== mapScene.id) {
-    const nm = scene > 0 ? await q("GETP", `Localization Localize:"SceneList_Comment_${scene}"`) : {};
-    const name = typeof nm.str === "string" && !nm.str.startsWith("SceneList_") ? nm.str : "";
-    mapScene = { id: scene, name };
-  }
-  const ln = await q("GETP", "ChannelDocument get_CurrentLineID");
-  const line = ln.ok === true && typeof ln.int === "number" ? ln.int : undefined;
-  const ch = line ? await q("GETP", `ChannelDocument LineIDToLine:${line}`) : {};
-  return { ...snap, scene, sceneName: mapScene.name, channel: typeof ch.int === "number" ? ch.int : undefined };
-});
-
-// Aviso de unico: so o ENTS (~40 ms). Engine antigo devolve null: a leitura
-// reserva pelo GETP leva segundos e nao roda a cada checagem.
-ipcMain.handle("engine:ents", async () => {
-  const r = await sendCommand("127.0.0.1", HOST_PORT, "ENTS", String(MAP_RADIUS_M));
-  return parseEnts(r, new Set());
 });
 
 // Mochila: espacos livres e ocupados (so leitura; pro aviso de mochila cheia).
@@ -342,6 +299,16 @@ ipcMain.handle("engine:guild", async (_e, cfg: GuildConfig) => {
 
 ipcMain.handle("engine:guildstop", async () => {
   stopGuild();
+});
+
+// Guild Boss: entrada, saida de party, buffs por gold e safe zone.
+ipcMain.handle("engine:guildboss", async (_e, cfg: GuildBossConfig) => {
+  const push = (m: string) => win?.webContents.send("sro:log", "[guildboss] " + m);
+  return runGuildBoss("127.0.0.1", HOST_PORT, cfg, push);
+});
+
+ipcMain.handle("engine:guildbossstop", async () => {
+  stopGuildBoss();
 });
 
 // Album de cards: analisa sobras seguras e ativa/sobe/quebra excedentes.
@@ -689,31 +656,6 @@ ipcMain.handle("hist:tick", async (_e, training: boolean) => {
 });
 ipcMain.handle("hist:event", async (_e, ev: HistEvent) => recordEvent(ev));
 ipcMain.handle("hist:summary", async (_e, hours: number) => historySummary(Math.max(1, Math.min(24 * 30, hours)) * 3600 * 1000));
-
-// Diagnostico: o painel manda o log e o localStorage; o main junta versoes e os
-// .json da pasta de dados (nunca os .bin) e pergunta onde salvar.
-ipcMain.handle("diag:export", async (_e, local: Record<string, string>, log: string) => {
-  const when = new Date();
-  let history: unknown;
-  try {
-    history = historySummary(24 * 3600 * 1000);
-  } catch (e) {
-    history = "sem historico: " + String(e);
-  }
-  const text = collectDiagnostic(app.getPath("userData"), {
-    when,
-    versions: { app: app.getVersion(), electron: process.versions.electron, os: `${process.platform} ${process.getSystemVersion()}`, serial: SERIAL },
-    local,
-    history,
-    log,
-  });
-  const r = win
-    ? await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath("downloads"), diagnosticFileName(when)), filters: [{ name: "Texto", extensions: ["txt"] }] })
-    : { canceled: true, filePath: undefined };
-  if (r.canceled || !r.filePath) return { ok: false, erro: "cancelado" };
-  fs.writeFileSync(r.filePath, text, "utf-8");
-  return { ok: true, path: r.filePath };
-});
 
 ipcMain.handle("ai:snapshot", async (_e, appInfo: AppInfo) => aiState(appInfo));
 
