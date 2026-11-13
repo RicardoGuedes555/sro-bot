@@ -4,6 +4,15 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("sro", {
   setup: () => ipcRenderer.invoke("engine:setup"),
   player: () => ipcRenderer.invoke("engine:player"),
+  map: () => ipcRenderer.invoke("engine:map"),
+  ents: () => ipcRenderer.invoke("engine:ents"),
+  buffs: () => ipcRenderer.invoke("engine:buffs"),
+  navmesh: (scene: number) => ipcRenderer.invoke("engine:navmesh", scene),
+  runGuildBoss: (cfg: { enabled: boolean; goldBuffsMax: number; dodgeSupreme: boolean; autoFight: boolean }) =>
+    ipcRenderer.invoke("engine:guildboss", cfg),
+  stopGuildBoss: () => ipcRenderer.invoke("engine:guildbossstop"),
+  chat: (key: string, sinceId: number) => ipcRenderer.invoke("engine:chat", key, sinceId),
+  chatSend: (key: string, text: string, to?: string) => ipcRenderer.invoke("engine:chatsend", key, text, to),
   inject: () => ipcRenderer.invoke("engine:inject"),
   restore: () => ipcRenderer.invoke("engine:restore"),
   gameForeground: () => ipcRenderer.invoke("engine:gamefg"),
@@ -45,9 +54,6 @@ contextBridge.exposeInMainWorld("sro", {
   runGuild: (cfg: { signIn: string; chests: boolean; salary: boolean; redPacket: boolean; storeWeekly?: boolean }) =>
     ipcRenderer.invoke("engine:guild", cfg),
   stopGuild: () => ipcRenderer.invoke("engine:guildstop"),
-  runGuildBoss: (cfg: { enabled: boolean; goldBuffsMax: number; dodgeSupreme: boolean; autoFight: boolean }) =>
-    ipcRenderer.invoke("engine:guildboss", cfg),
-  stopGuildBoss: () => ipcRenderer.invoke("engine:guildbossstop"),
   previewCardAlbum: (cfg: {
     activateSets: boolean;
     upgradeStars: boolean;
@@ -93,6 +99,7 @@ contextBridge.exposeInMainWorld("sro", {
   histTick: (training: boolean) => ipcRenderer.invoke("hist:tick", training),
   histEvent: (ev: unknown) => ipcRenderer.invoke("hist:event", ev),
   histSummary: (hours: number) => ipcRenderer.invoke("hist:summary", hours),
+  diagExport: (local: Record<string, string>, log: string) => ipcRenderer.invoke("diag:export", local, log),
   autoLogin: () => ipcRenderer.invoke("engine:autologin"),
   stopLogin: () => ipcRenderer.invoke("engine:loginstop"),
   uiLog: (m: string) => ipcRenderer.send("ui:log", m),

@@ -1,6 +1,8 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { isConnectionLostText, isKickedText, isSameChar, type LoginProfile, mergeProfile, parseCharTarget } from "../controller/login";
 import { autoLogin, stopAutoLogin } from "./autologin";
@@ -25,6 +27,9 @@ import {
 import { type GameState, reconnectPlan } from "../controller/libstate";
 import { type AppSettings, consolePath, normalizeSettings, resolveAdb, serialFor } from "../controller/settings";
 import { adbBin, setAdbBin, setEmulator } from "./adbbin";
+import { chatChannelId, chatSendCheck, parseTzOffset, readChatChannel, sayBody } from "../controller/chat";
+import { parseBufs } from "../controller/charstatus";
+import { buildNav, type NavMap, parseNavText } from "../controller/navmesh";
 import { runDemonTower, stopDemonTower } from "./tower";
 import { hpPercent, readChannel, readEnemiesAround, readTrainSnapshot, safeToStopHunt, type TrainConfig } from "../controller/train";
 import type { FirmConfig } from "../controller/firm";
@@ -50,7 +55,10 @@ import { aiChat, type AppInfo, aiSnapshot, hasAiKey, loadAiSettings, providerMod
 import type { AiSettings, ChatMessage } from "../controller/ai";
 import { flushHistory, historySummary, initHistory, recordEvent, recordSample } from "./history";
 import type { HistEvent } from "../controller/history";
+import { diagnosticFileName } from "../controller/diagnostic";
+import { collectDiagnostic } from "./diagnostic";
 import { setupUpdater } from "./updater";
+import { isLocalizationKey, MAP_RADIUS_M, parseEnts, readMapGetp, readTeamIds } from "../controller/map";
 
 // Configuracao de caminhos (pasta do LDPlayer, instancia, adb) na pasta de dados.
 function settingsPath(): string {
@@ -155,6 +163,158 @@ ipcMain.handle("engine:setup", async () => {
 
 ipcMain.handle("engine:player", async () => {
   return queryPlayer("127.0.0.1", HOST_PORT);
+});
+
+// Mapa ao vivo (aba Mapa): uma leitura por chamada. ENTS quando o engine tem;
+// senao a leitura reserva pelo GETP. O time e o nome do mapa mudam pouco: o time
+// e relido a cada 30 s e o nome so quando a cena muda.
+let mapTeam = { ids: new Set<number>(), at: 0 };
+let mapScene = { id: -1, name: "" };
+const mapNames = new Map<string, string>();
+ipcMain.handle("engine:map", async () => {
+  const q = (tag: string, body: string) => sendCommand("127.0.0.1", HOST_PORT, tag, body);
+  if (Date.now() - mapTeam.at > 30000) mapTeam = { ids: await readTeamIds(q), at: Date.now() };
+  const r = await q("ENTS", String(MAP_RADIUS_M));
+  const snap = parseEnts(r, mapTeam.ids) ?? (await readMapGetp(q, mapTeam.ids));
+  if (!snap) return null;
+  // Nome de NPC vem como chave: traduz e guarda (no maximo 10 novas por leitura).
+  let fresh = 0;
+  for (const e of snap.ents) {
+    if (!isLocalizationKey(e.name)) continue;
+    if (!mapNames.has(e.name) && fresh++ < 10) {
+      const t = await q("GETP", `Localization Localize:"${e.name}"`);
+      mapNames.set(e.name, typeof t.str === "string" && t.str !== e.name ? t.str : "");
+    }
+    e.name = mapNames.get(e.name) ?? "";
+  }
+  const sc = await q("GETP", "XScene get_SceneID");
+  const scene = sc.ok === true && typeof sc.int === "number" ? sc.int : -1;
+  if (scene !== mapScene.id) {
+    const nm = scene > 0 ? await q("GETP", `Localization Localize:"SceneList_Comment_${scene}"`) : {};
+    const name = typeof nm.str === "string" && !nm.str.startsWith("SceneList_") ? nm.str : "";
+    mapScene = { id: scene, name };
+  }
+  const ln = await q("GETP", "ChannelDocument get_CurrentLineID");
+  const line = ln.ok === true && typeof ln.int === "number" ? ln.int : undefined;
+  const ch = line ? await q("GETP", `ChannelDocument LineIDToLine:${line}`) : {};
+  return { ...snap, scene, sceneName: mapScene.name, channel: typeof ch.int === "number" ? ch.int : undefined };
+});
+
+// Aviso de unico: so o ENTS (~40 ms). Engine antigo devolve null: a leitura
+// reserva pelo GETP leva segundos e nao roda a cada checagem.
+ipcMain.handle("engine:ents", async () => {
+  const r = await sendCommand("127.0.0.1", HOST_PORT, "ENTS", String(MAP_RADIUS_M));
+  return parseEnts(r, new Set());
+});
+
+// Chat do jogo, so leitura: as mensagens do canal com id maior que sinceId.
+// A hora vem no fuso do aparelho, lido uma vez pelo adb.
+const execFileP = promisify(execFile);
+let chatTz: number | undefined;
+ipcMain.handle("engine:chat", async (_e, key: string, sinceId: number) => {
+  const ch = chatChannelId(key);
+  if (ch === undefined) return null;
+  if (chatTz === undefined) {
+    const r = await execFileP(adbBin(), ["-s", SERIAL, "shell", "date", "+%z"], { timeout: 10000 }).catch(() => null);
+    chatTz = r ? parseTzOffset(String(r.stdout)) : undefined;
+  }
+  const q = (tag: string, body: string) => sendCommand("127.0.0.1", HOST_PORT, tag, body);
+  return readChatChannel(q, ch, sinceId, chatTz ?? 0);
+});
+
+// Responder no chat: so pelo botao do painel. Confere texto, nivel, intervalo do
+// canal e destino antes; manda pela tag CHAT (o engine chama o SendChatContent do
+// jogo). Engine antigo sem CHAT devolve so o jogador: vira erro, sem efeito.
+const chatSentAt = new Map<string, number>();
+ipcMain.handle("engine:chatsend", async (_e, key: string, text: string, to?: string) => {
+  const ch = chatChannelId(key);
+  const p = await queryPlayer("127.0.0.1", HOST_PORT).catch(() => null);
+  if (ch === undefined || !p || p.ok !== true) return { ok: false, erro: "jogo nao conectado" };
+  const level = (p as { level?: unknown }).level;
+  const c = chatSendCheck(key, String(text ?? ""), { level: typeof level === "number" ? level : undefined, lastSentAt: chatSentAt.get(key), now: Date.now(), to });
+  if (!c.ok) return { ok: false, erro: c.erro };
+  const r = await sendCommand("127.0.0.1", HOST_PORT, "CHAT", sayBody(ch, to ?? "", c.text));
+  if (r.ok !== true) return { ok: false, erro: typeof r.erro === "string" ? r.erro : "engine sem o comando de chat (abra o jogo de novo pelo app)" };
+  chatSentAt.set(key, Date.now());
+  return { ok: true };
+});
+
+// Buffs ativos do char (BUFS), com o nome traduzido pelo jogo e guardado. Engine
+// sem BUFS devolve so o jogador: null.
+const buffNames = new Map<string, string>();
+ipcMain.handle("engine:buffs", async () => {
+  const q = (tag: string, body: string) => sendCommand("127.0.0.1", HOST_PORT, tag, body);
+  const list = parseBufs(await q("BUFS", ""));
+  if (!list) return null;
+  let fresh = 0;
+  for (const b of list) {
+    if (!b.key) continue;
+    if (!buffNames.has(b.key) && fresh++ < 10) {
+      const t = await q("GETP", `Localization Localize:"${b.key}"`);
+      buffNames.set(b.key, typeof t.str === "string" && t.str !== b.key ? t.str : "");
+    }
+    b.name = buffNames.get(b.key) ?? "";
+  }
+  return list;
+});
+
+// Navmesh da cena pro Mapa (paredes e areas bloqueadas). Pede ao engine (NAVM:
+// triangulacao na thread principal) so uma vez por cena e guarda em
+// navmesh/<cena>.txt na pasta de dados. Null = engine sem NAVM, cena trocou no
+// meio ou erro; o Mapa segue sem paredes.
+const navCache = new Map<number, NavMap | null>();
+const navBusy = new Map<number, Promise<NavMap | null>>();
+async function fetchNavText(scene: number): Promise<string | null> {
+  const q = (tag: string, body: string) => sendCommand("127.0.0.1", HOST_PORT, tag, body, 8000);
+  const sceneNow = async () => (await q("GETP", "XScene get_SceneID")).int;
+  if ((await sceneNow()) !== scene) return null;
+  const st = await q("NAVM", "start");
+  if (st.ok !== true) return null; // engine antigo
+  let size = 0;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const r = await q("NAVM", "get 0");
+    if (r.state === 3) return null;
+    if (r.state === 2 && typeof r.size === "number") {
+      size = r.size;
+      break;
+    }
+  }
+  if (!size) return null;
+  let text = "";
+  while (text.length < size) {
+    const r = await q("NAVM", `get ${text.length}`);
+    if (r.state !== 2 || typeof r.part !== "string" || !r.part) return null;
+    text += r.part;
+  }
+  return (await sceneNow()) === scene ? text : null;
+}
+ipcMain.handle("engine:navmesh", async (_e, scene: number) => {
+  if (!Number.isInteger(scene) || scene <= 0) return null;
+  if (navCache.has(scene)) return navCache.get(scene);
+  let busy = navBusy.get(scene);
+  if (!busy) {
+    busy = (async () => {
+      const file = path.join(app.getPath("userData"), "navmesh", `${scene}.txt`);
+      let text: string | null = null;
+      try {
+        text = fs.readFileSync(file, "utf8");
+      } catch {
+        text = await fetchNavText(scene).catch(() => null);
+        if (text) {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, text);
+        }
+      }
+      const raw = text ? parseNavText(text) : null;
+      const nav = raw ? buildNav(raw) : null;
+      if (nav) navCache.set(scene, nav);
+      return nav;
+    })();
+    navBusy.set(scene, busy);
+    void busy.finally(() => navBusy.delete(scene));
+  }
+  return busy;
 });
 
 // Mochila: espacos livres e ocupados (so leitura; pro aviso de mochila cheia).
@@ -262,6 +422,16 @@ ipcMain.handle("engine:continental", async (_e, cfg: ContinentalConfig) => {
   return runContinental("127.0.0.1", HOST_PORT, fullCfg, push);
 });
 
+// Guild Boss: entrada, saida de party, buffs por gold e safe zone.
+ipcMain.handle("engine:guildboss", async (_e, cfg: GuildBossConfig) => {
+  const push = (m: string) => win?.webContents.send("sro:log", "[guildboss] " + m);
+  return runGuildBoss("127.0.0.1", HOST_PORT, cfg, push);
+});
+
+ipcMain.handle("engine:guildbossstop", async () => {
+  stopGuildBoss();
+});
+
 ipcMain.handle("engine:continentalstop", async () => {
   stopContinental();
 });
@@ -299,16 +469,6 @@ ipcMain.handle("engine:guild", async (_e, cfg: GuildConfig) => {
 
 ipcMain.handle("engine:guildstop", async () => {
   stopGuild();
-});
-
-// Guild Boss: entrada, saida de party, buffs por gold e safe zone.
-ipcMain.handle("engine:guildboss", async (_e, cfg: GuildBossConfig) => {
-  const push = (m: string) => win?.webContents.send("sro:log", "[guildboss] " + m);
-  return runGuildBoss("127.0.0.1", HOST_PORT, cfg, push);
-});
-
-ipcMain.handle("engine:guildbossstop", async () => {
-  stopGuildBoss();
 });
 
 // Album de cards: analisa sobras seguras e ativa/sobe/quebra excedentes.
@@ -656,6 +816,31 @@ ipcMain.handle("hist:tick", async (_e, training: boolean) => {
 });
 ipcMain.handle("hist:event", async (_e, ev: HistEvent) => recordEvent(ev));
 ipcMain.handle("hist:summary", async (_e, hours: number) => historySummary(Math.max(1, Math.min(24 * 30, hours)) * 3600 * 1000));
+
+// Diagnostico: o painel manda o log e o localStorage; o main junta versoes e os
+// .json da pasta de dados (nunca os .bin) e pergunta onde salvar.
+ipcMain.handle("diag:export", async (_e, local: Record<string, string>, log: string) => {
+  const when = new Date();
+  let history: unknown;
+  try {
+    history = historySummary(24 * 3600 * 1000);
+  } catch (e) {
+    history = "sem historico: " + String(e);
+  }
+  const text = collectDiagnostic(app.getPath("userData"), {
+    when,
+    versions: { app: app.getVersion(), electron: process.versions.electron, os: `${process.platform} ${process.getSystemVersion()}`, serial: SERIAL },
+    local,
+    history,
+    log,
+  });
+  const r = win
+    ? await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath("downloads"), diagnosticFileName(when)), filters: [{ name: "Texto", extensions: ["txt"] }] })
+    : { canceled: true, filePath: undefined };
+  if (r.canceled || !r.filePath) return { ok: false, erro: "cancelado" };
+  fs.writeFileSync(r.filePath, text, "utf-8");
+  return { ok: true, path: r.filePath };
+});
 
 ipcMain.handle("ai:snapshot", async (_e, appInfo: AppInfo) => aiState(appInfo));
 

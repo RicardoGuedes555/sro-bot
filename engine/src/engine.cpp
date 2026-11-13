@@ -82,6 +82,9 @@ struct Action {
     // (Transform.Find, GetComponent) pode rodar.
     char xm_path[192];
     char xm_opath[8][160];
+    // method 15 (CHAT): texto do chat em UTF-8 (a1 = canal) e o destino do privado.
+    char say[1024];
+    uint64_t say_to;
 };
 std::mutex g_queue_mu;
 std::vector<Action> g_queue;
@@ -110,6 +113,17 @@ FnUpd g_orig_login_update = nullptr;
 using FnDeath = void (*)(void*, void*, const void*);
 FnDeath g_orig_death = nullptr;
 std::atomic<int> g_death_events{0};
+// Mortes cujo Killer e o jogador local (abates do char, contados no hook).
+std::atomic<int> g_kills{0};
+// Relogio do jogo (Time.realtimeSinceStartup) lido na thread principal ~1x/s e o
+// CLOCK_MONOTONIC (ms) da leitura: o BUFS conta o tempo restante dos buffs nele.
+std::atomic<float> g_rt{-1.0f};
+std::atomic<long long> g_rt_ms{0};
+// Navmesh da cena (NAVM): 0 nada, 1 na fila, 2 pronto, 3 erro. g_nav_text =
+// "v x,z,x,z...|t a,b,c,...|a area,..." (so numeros, pra ir em pedacos no JSON).
+std::mutex g_nav_mu;
+std::string g_nav_text;
+std::atomic<int> g_nav_state{0};
 
 struct Introspection {
     bool ok = false;
@@ -599,17 +613,14 @@ bool field_is_string(void* fi) {
     return is;
 }
 
-// {"ok":true,"str":"..."} de um System.String (null vira "null":true). O
-// read_il2cpp_string ja troca nao-ASCII por '?'; aqui so escapa aspas e barra.
-// Requer FaultGuard ativo.
+std::string il2cpp_string_json(void* s, int maxLen = 128);
+
+// {"ok":true,"str":"..."} de um System.String (null vira "null":true), em UTF-8:
+// nome e chat com letra fora do ASCII saem inteiros (o chat vai ate 512
+// caracteres). Requer FaultGuard ativo.
 std::string string_json(void* s) {
     if (!s) return "{\"ok\":true,\"null\":true}";
-    std::string out = "{\"ok\":true,\"str\":\"";
-    for (char c : read_il2cpp_string(s)) {
-        if (c == '"' || c == '\\') out += '\\';
-        out += c;
-    }
-    return out + "\"}";
+    return "{\"ok\":true,\"str\":\"" + il2cpp_string_json(s, 512) + "\"}";
 }
 
 // Igual ao dump_object_values, mas com o TIPO de cada campo e, quando o valor
@@ -855,17 +866,17 @@ std::string read_live_player(Il2CppApi& api, const void* img) {
     LOG("player=%p name=%s lvl=%d pos=(%.1f,%.1f,%.1f)", player, name.c_str(), level,
         cp[0], cp[1], cp[2]);
 
-    char head[448];
+    char head[512];
     std::snprintf(head, sizeof(head),
                   "{\"ok\":true,\"player\":\"%p\",\"level\":%d,\"exp\":%d,\"maxExp\":%d,"
                   "\"hp\":%d,\"maxHp\":%d,\"mp\":%d,\"maxMp\":%d,"
                   "\"dead\":%s,\"inCombat\":%s,\"autoPlayOn\":%s,\"aiFighting\":%s,"
-                  "\"deathEvents\":%d,"
+                  "\"deathEvents\":%d,\"kills\":%d,"
                   "\"corrected\":[%.2f,%.2f,%.2f],\"okc\":%s,\"name\":\"",
                   player, level, exp, maxexp, hp, maxHp, mp, maxMp,
                   dead ? "true" : "false", inCombat ? "true" : "false",
                   autoPlay ? "true" : "false", aiFight ? "true" : "false",
-                  g_death_events.load(std::memory_order_relaxed),
+                  g_death_events.load(std::memory_order_relaxed), g_kills.load(std::memory_order_relaxed),
                   cp[0], cp[1], cp[2], okc ? "true" : "false");
     return std::string(head) + esc + "\"}";
 }
@@ -1200,7 +1211,7 @@ void exec_auto_main(const Action& act) {
     // Metodos 7/8/9/10 (calls/callsn/callsi/callp, ex.: login) nao dependem do
     // jogador: rodam pre-mundo. Os demais (0-6, auto-hunt) precisam do player.
     if (!player && method != 7 && method != 8 && method != 9 && method != 10 && method != 11 && method != 12 &&
-        method != 13 && method != 14) return;
+        method != 13 && method != 14 && method != 16) return;
     if (!g_api.object_get_class || !g_api.class_get_method_from_name || !g_api.runtime_invoke)
         return;
     uint8_t b1 = a1 ? 1 : 0, b2 = a2 ? 1 : 0;
@@ -1308,6 +1319,107 @@ void exec_auto_main(const Action& act) {
         g_api.runtime_invoke(act.mi, act.obj, act.argc > 0 ? p : nullptr, &exc);
         LOG("exec callp %s.%s(%d nulos) obj=%p exc=%s", act.cls, act.name, act.argc, act.obj,
             exc ? "sim" : "nao");
+        return;
+    }
+
+    // method 16 = NAVM: UnityEngine.AI.NavMesh.CalculateTriangulation() da cena
+    // atual (metodo da Unity: so aqui, na thread principal). Guarda vertices em
+    // x,z (0,1 m), os triangulos e a area de cada um em g_nav_text pro socket
+    // mandar em pedacos. Roda uma vez por pedido do app (que guarda por cena).
+    if (method == 16) {
+        static const void* mi = nullptr;
+        static bool tried = false;
+        if (!mi && !tried) {
+            tried = true;
+            size_t count = 0;
+            const void** asms = g_api.domain_get_assemblies(g_api.domain_get(), &count);
+            for (size_t i = 0; i < count && !mi; i++) {
+                const void* img = g_api.assembly_get_image(asms[i]);
+                const char* an = img ? g_api.image_get_name(img) : nullptr;
+                if (!an || std::strncmp(an, "UnityEngine.AIModule", 20) != 0) continue;
+                void* k = g_api.class_from_name(img, "UnityEngine.AI", "NavMesh");
+                mi = k ? g_api.class_get_method_from_name(k, "CalculateTriangulation", 0) : nullptr;
+            }
+        }
+        auto fail = [](const char* why) {
+            LOGE("navm: %s", why);
+            g_nav_state = 3;
+        };
+        if (!mi) return fail("NavMesh.CalculateTriangulation nao achado");
+        void* exc = nullptr;
+        void* r = g_api.runtime_invoke(mi, nullptr, nullptr, &exc);
+        if (exc || !r) return fail("excecao na triangulacao");
+        // NavMeshTriangulation volta boxed: o offset do campo ja conta o cabecalho.
+        void* tc = g_api.object_get_class(r);
+        void* fv = tc ? g_api.class_get_field_from_name(tc, "vertices") : nullptr;
+        void* fi = tc ? g_api.class_get_field_from_name(tc, "indices") : nullptr;
+        void* fa = tc ? g_api.class_get_field_from_name(tc, "areas") : nullptr;
+        if (!fv || !fi) return fail("campos vertices/indices nao achados");
+        void* va = *(void**)((char*)r + g_api.field_get_offset(fv));
+        void* ia = *(void**)((char*)r + g_api.field_get_offset(fi));
+        void* aa = fa ? *(void**)((char*)r + g_api.field_get_offset(fa)) : nullptr;
+        if (!plausible_obj(va) || !plausible_obj(ia)) return fail("navmesh vazio");
+        size_t nv = *(size_t*)((char*)va + 0x18), ni = *(size_t*)((char*)ia + 0x18);
+        size_t na = plausible_obj(aa) ? *(size_t*)((char*)aa + 0x18) : 0;
+        if (nv > 400000 || ni > 1200000) return fail("navmesh grande demais");
+        std::string s;
+        s.reserve(nv * 14 + ni * 6 + na * 2 + 16);
+        char b[48];
+        s += "v ";
+        const float* v = (const float*)((char*)va + 0x20);
+        for (size_t i = 0; i < nv; i++) {
+            std::snprintf(b, sizeof(b), "%s%.1f,%.1f", i ? "," : "", v[i * 3], v[i * 3 + 2]);
+            s += b;
+        }
+        s += "|t ";
+        const int32_t* ix = (const int32_t*)((char*)ia + 0x20);
+        for (size_t i = 0; i < ni; i++) {
+            std::snprintf(b, sizeof(b), "%s%d", i ? "," : "", ix[i]);
+            s += b;
+        }
+        s += "|a ";
+        const int32_t* ar = na ? (const int32_t*)((char*)aa + 0x20) : nullptr;
+        for (size_t i = 0; i < na; i++) {
+            std::snprintf(b, sizeof(b), "%s%d", i ? "," : "", ar[i]);
+            s += b;
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_nav_mu);
+            g_nav_text.swap(s);
+        }
+        g_nav_state = 2;
+        LOG("navm: %zu vertices, %zu triangulos", nv, ni / 3);
+        return;
+    }
+
+    // method 15 = CHAT: XChatView.SendChatContent(texto, canal, ...), o mesmo
+    // caminho do botao Enviar do chat (filtro de palavras e bloqueio do proprio
+    // jogo). No privado o destino e o ChatFriendId da tela, trocado so durante a
+    // chamada e devolvido depois.
+    if (method == 15) {
+        void* klass = find_class_by_name("XChatView");
+        void* view = klass ? resolve_singleton(klass) : nullptr;
+        if (!plausible_obj(view)) { LOGE("say: XChatView nulo"); return; }
+        const void* m = g_api.class_get_method_from_name(klass, "SendChatContent", 10);
+        if (!m || !g_api.string_new) { LOGE("say: SendChatContent nao achado"); return; }
+        uint64_t* friend_id = nullptr;
+        if (act.a1 == 3) {
+            void* fi = g_api.class_get_field_from_name(klass, "ChatFriendId");
+            if (!fi) { LOGE("say: ChatFriendId nao achado"); return; }
+            friend_id = (uint64_t*)((char*)view + g_api.field_get_offset(fi));
+        }
+        uint64_t before = friend_id ? *friend_id : 0;
+        if (friend_id) *friend_id = act.say_to;
+        int32_t ch = act.a1;
+        uint8_t yes = 1, no = 0;
+        uint32_t zero = 0;
+        // content, channelType, selfReceive, param, bIsSystem, audioUrl,
+        // audioFileName, audiotime, isRecruit, isDragonGuildRecruit
+        void* p[10] = {g_api.string_new(act.say), &ch, &yes, nullptr, &no, nullptr, nullptr, &zero, &no, &no};
+        void* exc = nullptr;
+        g_api.runtime_invoke(m, view, p, &exc);
+        if (friend_id) *friend_id = before;
+        LOG("exec say canal=%d exc=%s", ch, exc ? "sim" : "nao");
         return;
     }
 
@@ -1475,7 +1587,42 @@ void exec_auto_main(const Action& act) {
     }
 }
 
+long long monotonic_ms() {
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+// Le o Time.realtimeSinceStartup ~1x/s (thread principal: getter da Unity so
+// aqui). ServerBuffInfo.leftTime = startLeftTime - (realtime - startTime).
+void capture_clock() {
+    static const void* mi = nullptr;
+    static bool tried = false;
+    long long now = monotonic_ms();
+    if (now - g_rt_ms.load(std::memory_order_relaxed) < 1000) return;
+    if (!mi && !tried) {
+        tried = true;
+        size_t count = 0;
+        const void** asms = g_api.domain_get_assemblies(g_api.domain_get(), &count);
+        for (size_t i = 0; i < count && !mi; i++) {
+            const void* img = g_api.assembly_get_image(asms[i]);
+            const char* an = img ? g_api.image_get_name(img) : nullptr;
+            if (!an || std::strncmp(an, "UnityEngine.CoreModule", 22) != 0) continue;
+            void* k = g_api.class_from_name(img, "UnityEngine", "Time");
+            mi = k ? g_api.class_get_method_from_name(k, "get_realtimeSinceStartup", 0) : nullptr;
+        }
+        if (!mi) LOGE("relogio: Time.get_realtimeSinceStartup nao achado");
+    }
+    if (!mi) return;
+    void* exc = nullptr;
+    void* r = g_api.runtime_invoke(mi, nullptr, nullptr, &exc);
+    if (exc || !r) return;
+    g_rt.store(*reinterpret_cast<float*>((char*)r + 0x10), std::memory_order_relaxed);
+    g_rt_ms.store(now, std::memory_order_relaxed);
+}
+
 void drain_queue() {
+    capture_clock();
     if (!g_has_actions.load(std::memory_order_relaxed)) return;  // frame sem acao
     std::vector<Action> todo;
     {
@@ -1514,6 +1661,20 @@ void hook_death(void* self, void* deathInfo, const void* mi) {
     if (!logged.exchange(true)) LOG("hook_death CHAMADO (1a vez)");
     if (g_orig_death) g_orig_death(self, deathInfo, mi);
     g_death_events.fetch_add(1, std::memory_order_relaxed);
+    // Abate do char: Killer (DeathInfo.get_Killer) igual ao get_ID do jogador.
+    // Thread principal: chama os getters direto.
+    void* player = current_player(g_api, g_xmain);
+    if (!player || !deathInfo || !g_api.object_get_class) return;
+    auto u64_of = [](void* obj, const char* name) -> uint64_t {
+        void* c = g_api.object_get_class(obj);
+        const void* m = c ? g_api.class_get_method_from_name(c, name, 0) : nullptr;
+        if (!m) return 0;
+        void* exc = nullptr;
+        void* r = g_api.runtime_invoke(m, obj, nullptr, &exc);
+        return (exc || !r) ? 0 : *reinterpret_cast<uint64_t*>((char*)r + 0x10);
+    };
+    uint64_t killer = u64_of(deathInfo, "get_Killer");
+    if (killer && killer == u64_of(player, "get_ID")) g_kills.fetch_add(1, std::memory_order_relaxed);
 }
 
 // Acha uma classe de gameplay pelo nome (primeira em assembly nao-sistema).
@@ -1969,11 +2130,12 @@ std::string walk_path(const std::vector<std::string>& path, size_t end, void*& o
 }
 
 // Il2CppString (UTF-16) em UTF-8 com escape de JSON. O read_il2cpp_string troca
-// letra fora do ASCII por "?"; aqui o nome sai inteiro pro mapa.
-std::string il2cpp_string_json(void* s) {
+// letra fora do ASCII por "?"; aqui o texto sai inteiro (nomes do mapa e GETP).
+// Texto maior que maxLen volta vazio, como no read_il2cpp_string.
+std::string il2cpp_string_json(void* s, int maxLen) {
     std::string out;
     int len = 0;
-    if (!plausible(s) || !safe_read(&len, (char*)s + 0x10, 4) || len <= 0 || len > 128) return out;
+    if (!plausible(s) || !safe_read(&len, (char*)s + 0x10, 4) || len <= 0 || len > maxLen) return out;
     for (int i = 0; i < len; i++) {
         uint16_t c = 0;
         if (!safe_read(&c, (char*)s + 0x14 + i * 2, 2)) break;
@@ -2133,6 +2295,38 @@ std::string read_entities_json(float radius) {
             std::snprintf(buf, sizeof(buf), "%s[%.1f,%.1f,%u,%u]", nd ? "," : "", p[0], p[2], item, cnt);
             j += buf;
             nd++;
+        }
+    }
+    // path = [x, z] dos pontos do caminho que o char esta andando no mapa atual
+    // (XNavigationComponent._realPath, calculado no Navigate; o primeiro e onde
+    // ele estava ao comecar). Vazio sem navegacao (_bNav falso ou caminho nulo).
+    j += "],\"path\":[";
+    static size_t off_nav = 0, off_bnav = 0, off_real = 0;
+    if (!off_nav) {
+        void* f = find_field_in_chain(safe_class_of(player), "_nav");
+        if (f) off_nav = g_api.field_get_offset(f);
+    }
+    void* nav = nullptr;
+    if (off_nav && safe_read(&nav, (char*)player + off_nav, sizeof(nav)) && plausible_obj(nav)) {
+        if (!off_bnav) {
+            void* c = safe_class_of(nav);
+            void* f1 = find_field_in_chain(c, "_bNav");
+            void* f2 = find_field_in_chain(c, "_realPath");
+            if (f1 && f2) { off_bnav = g_api.field_get_offset(f1); off_real = g_api.field_get_offset(f2); }
+        }
+        uint8_t on = 0;
+        void* arr = nullptr;
+        size_t len = 0;
+        if (off_bnav && safe_read(&on, (char*)nav + off_bnav, 1) && on &&
+            safe_read(&arr, (char*)nav + off_real, sizeof(arr)) && plausible_obj(arr) &&
+            safe_read(&len, (char*)arr + 0x18, sizeof(len))) {
+            // Vector3[]: max_length em +0x18, elementos de 12 bytes a partir de +0x20.
+            for (size_t i = 0; i < len && i < 64; i++) {
+                float p[3] = {0, 0, 0};
+                if (!safe_read(p, (char*)arr + 0x20 + i * 12, sizeof(p))) break;
+                std::snprintf(buf, sizeof(buf), "%s[%.1f,%.1f]", i ? "," : "", p[0], p[2]);
+                j += buf;
+            }
         }
     }
     j += "]}";
@@ -2315,6 +2509,96 @@ std::string dispatch_command(const std::string& tag, const std::string& body) {
         std::lock_guard<std::mutex> lk(g_read_mu);
         return read_entities_json((float)std::atof(body.c_str()));
     }
+    // BUFS: buffs do char (XBuffComponent._ServerBuffList) =
+    // [id, nivel, pilha, restante s, total s, "chave do nome"]. Restante -1 = sem
+    // tempo (buff fixo) ou relogio ainda nao lido. So campos (nada da Unity): o
+    // relogio vem do capture_clock da thread principal.
+    if (tag == "BUFS" && g_ready) {
+        std::lock_guard<std::mutex> lk(g_read_mu);
+        void* mgrc = find_class_by_name("XEntityMgr");
+        void* mgr = mgrc ? resolve_singleton(mgrc) : nullptr;
+        if (!plausible_obj(mgr)) return "{\"ok\":false,\"erro\":\"XEntityMgr nulo\"}";
+        FaultGuard guard;
+        void* player = nullptr;
+        if (!safe_read(&player, (char*)mgr + OFF_ENTITYMGR_PLAYER, sizeof(player)) || !plausible_obj(player))
+            return "{\"ok\":false,\"erro\":\"jogador nulo (nao esta em mundo?)\"}";
+        static size_t off_buff = 0, off_list = 0, o_id = 0, o_lv = 0, o_stack = 0, o_st = 0, o_sl = 0, o_ui = 0, o_info = 0, o_name = 0;
+        if (!off_buff) {
+            void* f = find_field_in_chain(safe_class_of(player), "_buff");
+            if (f) off_buff = g_api.field_get_offset(f);
+        }
+        void* bc = nullptr;
+        if (!off_buff || !safe_read(&bc, (char*)player + off_buff, sizeof(bc)) || !plausible_obj(bc))
+            return "{\"ok\":false,\"erro\":\"sem _buff\"}";
+        if (!off_list) {
+            void* f = find_field_in_chain(safe_class_of(bc), "_ServerBuffList");
+            if (f) off_list = g_api.field_get_offset(f);
+        }
+        void* list = nullptr;
+        if (!off_list || !safe_read(&list, (char*)bc + off_list, sizeof(list)) || !plausible_obj(list))
+            return "{\"ok\":false,\"erro\":\"sem _ServerBuffList\"}";
+        void* items = nullptr;
+        int size = 0;
+        safe_read(&items, (char*)list + 0x10, sizeof(items));
+        safe_read(&size, (char*)list + 0x18, 4);
+        long long age = monotonic_ms() - g_rt_ms.load(std::memory_order_relaxed);
+        float rt = g_rt.load(std::memory_order_relaxed);
+        bool clock = rt >= 0 && age < 10000;
+        float now = clock ? rt + (float)age / 1000.0f : 0;
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"clock\":%s,\"buffs\":[", clock ? "true" : "false");
+        std::string j = buf;
+        int n = 0;
+        for (int i = 0; plausible_obj(items) && i < size && i < 60; i++) {
+            void* b = nullptr;
+            if (!safe_read(&b, (char*)items + 0x20 + (size_t)i * 8, sizeof(b)) || !plausible_obj(b)) continue;
+            if (!o_id) {
+                void* c = safe_class_of(b);
+                void* f1 = find_field_in_chain(c, "buffID");
+                void* f2 = find_field_in_chain(c, "buffLevel");
+                void* f3 = find_field_in_chain(c, "stackCount");
+                void* f4 = find_field_in_chain(c, "startTime");
+                void* f5 = find_field_in_chain(c, "startLeftTime");
+                void* f6 = find_field_in_chain(c, "m_UIBuffInfo");
+                if (!f1 || !f2 || !f3 || !f4 || !f5 || !f6) break;
+                o_id = g_api.field_get_offset(f1); o_lv = g_api.field_get_offset(f2); o_stack = g_api.field_get_offset(f3);
+                o_st = g_api.field_get_offset(f4); o_sl = g_api.field_get_offset(f5); o_ui = g_api.field_get_offset(f6);
+            }
+            uint32_t id = 0, lv = 0, stack = 0;
+            float st = 0, sl = 0;
+            safe_read(&id, (char*)b + o_id, 4);
+            safe_read(&lv, (char*)b + o_lv, 4);
+            safe_read(&stack, (char*)b + o_stack, 4);
+            safe_read(&st, (char*)b + o_st, 4);
+            safe_read(&sl, (char*)b + o_sl, 4);
+            // Nome: m_UIBuffInfo.buffInfo.BuffName (chave de traducao).
+            std::string key;
+            void* ui = nullptr;
+            if (safe_read(&ui, (char*)b + o_ui, sizeof(ui)) && plausible_obj(ui)) {
+                if (!o_info) {
+                    void* f = find_field_in_chain(safe_class_of(ui), "buffInfo");
+                    if (f) o_info = g_api.field_get_offset(f);
+                }
+                void* info = nullptr;
+                if (o_info && safe_read(&info, (char*)ui + o_info, sizeof(info)) && plausible_obj(info)) {
+                    if (!o_name) {
+                        void* f = find_field_in_chain(safe_class_of(info), "BuffName");
+                        if (f) o_name = g_api.field_get_offset(f);
+                    }
+                    void* s = nullptr;
+                    if (o_name && safe_read(&s, (char*)info + o_name, sizeof(s))) key = il2cpp_string_json(s);
+                }
+            }
+            float left = (clock && sl > 0) ? sl - (now - st) : -1;
+            if (left < 0 && sl > 0 && clock) left = 0;
+            std::snprintf(buf, sizeof(buf), "%s[%u,%u,%u,%.0f,%.0f,\"", n ? "," : "", id, lv, stack, left, sl);
+            j += buf;
+            j += key;
+            j += "\"]";
+            n++;
+        }
+        return j + "]}";
+    }
     if (tag == "GETP" && g_boot_ready) {
         // GETP <Classe> [campo|getter ...] <getter|campo>: como o OBJV, segue o
         // caminho a partir do singleton e chama o getter (0 args) no objeto final,
@@ -2491,6 +2775,64 @@ std::string dispatch_command(const std::string& tag, const std::string& body) {
         char buf[120];
         std::snprintf(buf, sizeof(buf), "{\"ok\":true,\"enfileirado\":[%.1f,%.1f,%.1f]}", x, y, z);
         return buf;
+    }
+    // NAVM start: pede a triangulacao do navmesh da cena atual (method 16, na
+    // thread principal). NAVM get <off>: estado e um pedaco de ate 60000
+    // caracteres do texto a partir de off (so numeros, virgula, espaco e |).
+    if (tag == "NAVM" && g_ready) {
+        if (body.rfind("start", 0) == 0) {
+            if (g_nav_state != 1) {
+                g_nav_state = 1;
+                Action act{};
+                act.type = 2; act.method = 16;
+                std::lock_guard<std::mutex> lk(g_queue_mu);
+                g_queue.push_back(act);
+                g_has_actions = true;
+            }
+            return "{\"ok\":true,\"state\":1}";
+        }
+        if (body.rfind("get ", 0) == 0) {
+            size_t off = (size_t)std::strtoull(body.c_str() + 4, nullptr, 10);
+            int st = g_nav_state.load();
+            std::lock_guard<std::mutex> lk(g_nav_mu);
+            size_t size = st == 2 ? g_nav_text.size() : 0;
+            std::string part = (st == 2 && off < size) ? g_nav_text.substr(off, 60000) : std::string();
+            char head[96];
+            std::snprintf(head, sizeof(head), "{\"ok\":true,\"state\":%d,\"size\":%zu,\"off\":%zu,\"part\":\"", st, size, off);
+            return std::string(head) + part + "\"}";
+        }
+        return "{\"ok\":false,\"erro\":\"uso: NAVM start | NAVM get off\"}";
+    }
+    // CHAT <canal> <roleid> <hex>: manda uma mensagem no chat (method 15). Canal
+    // 1 Mundo, 2 Guilda, 7 Party, 3 Privado (roleid = destino; 0 nos outros).
+    // Texto em UTF-8 escrito em hex (pode ter espaco e acento), ate 1000 bytes.
+    // A resposta so confirma a fila: quem chama confere a mensagem no chat. Tag
+    // propria (nao SKIL): no engine antigo uma tag desconhecida so devolve o
+    // jogador, enquanto um SKIL desconhecido liga ou desliga a caca.
+    if (tag == "CHAT" && g_ready) {
+        std::vector<std::string> w = split_words(body);
+        if (w.size() != 3) return "{\"ok\":false,\"erro\":\"uso: CHAT canal roleid hex\"}";
+        int ch = std::atoi(w[0].c_str());
+        if (ch != 1 && ch != 2 && ch != 3 && ch != 7) return "{\"ok\":false,\"erro\":\"canal: 1 2 3 7\"}";
+        uint64_t to = std::strtoull(w[1].c_str(), nullptr, 10);
+        if (ch == 3 && to == 0) return "{\"ok\":false,\"erro\":\"privado sem destino\"}";
+        const std::string& hx = w[2];
+        Action act{};
+        if (hx.empty() || hx.size() % 2 || hx.size() / 2 >= sizeof(act.say))
+            return "{\"ok\":false,\"erro\":\"texto vazio ou longo demais\"}";
+        for (size_t i = 0; i < hx.size(); i += 2) {
+            unsigned v = 0;
+            if (std::sscanf(hx.c_str() + i, "%2x", &v) != 1 || v == 0)
+                return "{\"ok\":false,\"erro\":\"hex invalido\"}";
+            act.say[i / 2] = (char)v;
+        }
+        act.type = 2; act.method = 15; act.a1 = ch; act.say_to = to;
+        {
+            std::lock_guard<std::mutex> lk(g_queue_mu);
+            g_queue.push_back(act);
+            g_has_actions = true;
+        }
+        return "{\"ok\":true,\"say\":true}";
     }
     if (tag == "SKIL" && g_boot_ready) {
         // Liga/desliga o auto-hunt. Default (corpo "1"/"0" ou {"on":N}):

@@ -1,6 +1,6 @@
 // Logica do renderer: conecta, le o estado do jogador pelo engine e desenha.
 
-import { chestDelayMs } from "../controller/continental";
+import { chestDelayMs, chestPassRolls, contScheduleText } from "../controller/continental";
 import { type AiAction, parseActions, stripActions, validateAction } from "../controller/aiactions";
 import { activityExpLine, eventFromLog, type ExpPoint } from "../controller/history";
 import { unsignedExp } from "../controller/train";
@@ -10,6 +10,12 @@ import { luckyMoneyWindow } from "../controller/freebies";
 import { QIGONG_REQUEST_EVERY_MS } from "../controller/qigong";
 import { EXP_KEEP_MS, expDropText, type ExpPoint as RatePoint, type ExpWatch, expWatchStep } from "../controller/expwatch";
 import { alertFromLog, type TelegramAlert } from "../controller/telegram";
+import { uniqueStep, uniqueText } from "../controller/unique";
+import { CHAT_CHANNELS, type ChatMessage, mergeChat } from "../controller/chat";
+import { pathAhead } from "../controller/map";
+import type { NavMap } from "../controller/navmesh";
+import { buffLabel, buffLeftText, type CharBuff, killStep } from "../controller/charstatus";
+import { clearsNotice, nextNotice, noticeFromLog, type StopNotice } from "../controller/stopnotice";
 
 interface TgSettings {
   enabled: boolean;
@@ -35,6 +41,7 @@ interface PlayerState {
   inCombat?: boolean;
   autoPlayOn?: boolean;
   aiFighting?: boolean;
+  kills?: number; // abates do char desde que o jogo abriu (hook de morte do engine)
   corrected?: [number, number, number];
   next?: [number, number, number];
   erro?: string;
@@ -53,6 +60,12 @@ declare global {
     sro: {
       setup: () => Promise<{ serial: string; port: number }>;
       player: () => Promise<PlayerState>;
+      map: () => Promise<MapView | null>;
+      ents: () => Promise<Pick<MapView, "me" | "ents"> | null>;
+      chat: (key: string, sinceId: number) => Promise<ChatMessage[] | null>;
+      buffs: () => Promise<CharBuff[] | null>;
+      navmesh: (scene: number) => Promise<NavMap | null>;
+      chatSend: (key: string, text: string, to?: string) => Promise<{ ok: boolean; erro?: string }>;
       inject: () => Promise<{ ok: boolean; erro?: string }>;
       restore: () => Promise<{ ok: boolean; erro?: string }>;
       gameForeground: () => Promise<boolean>;
@@ -92,6 +105,7 @@ declare global {
         events: { ts: number; kind: string; text: string }[];
         samples: number;
       }>;
+      diagExport: (local: Record<string, string>, log: string) => Promise<{ ok: boolean; path?: string; erro?: string }>;
       switchChar: (name: string) => Promise<{ ok: boolean; erro?: string }>;
       mainChar: () => Promise<string>;
       isChar: (entry: string) => Promise<boolean>;
@@ -1574,6 +1588,21 @@ function setContNext(ms: number): void {
   } catch {
     /* sem storage: roda de novo no proximo ciclo */
   }
+  showContNext();
+}
+
+function storedAt(key: string): number {
+  try {
+    return Number(localStorage.getItem(key) ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+// Mostra no painel quando sai a proxima rodada de dados (e a passada de baus).
+function showContNext(): void {
+  const fmt = (t: number) => new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  $("ce-next").textContent = isChecked("act-cont") ? contScheduleText(storedAt("contNextAt"), storedAt("chestNextAt"), Date.now(), fmt) : "";
 }
 
 // Com o Treino rodando, o char vai pra cidade salva antes (parado no meio dos
@@ -1661,17 +1690,43 @@ async function scheduleChests(): Promise<void> {
     /* sem storage */
   }
   log(`Continental: proxima passada de baus em ${Math.round(ms / 60000)} min${left !== null ? ` (bau destravando: faltam ${Math.round(left / 60)} min)` : ""}.`);
+  showContNext();
+}
+
+// Fora da caca nao ha risco da caveira: a passada de baus vira rodada completa.
+async function chestPassCanRoll(): Promise<boolean> {
+  let inCombat = false;
+  try {
+    const p = await window.sro.player();
+    inCombat = p.ok && !!p.inCombat;
+  } catch {
+    return false; // sem leitura do char: so baus
+  }
+  return chestPassRolls({
+    training: trainRunning || (isChecked("act-train") && activitiesRunning),
+    inCombat,
+    multiChar: parseChars(readContUi().chars).length > 0,
+    sinceRoundMs: Date.now() - (storedAt("contNextAt") - CONT_EVERY_MS),
+  });
 }
 
 async function maybeRunChests(): Promise<void> {
   if (!polling || !isChecked("act-cont") || contBusy || watchdogBusy || loggingIn || !chestDue()) return;
   if (contDue()) return; // a rodada de dado ja trata os baus
+  if (await chestPassCanRoll()) {
+    log("Continental: char fora da caca, a passada de baus tambem rola os dados.");
+    setContNext((await runContinentalSafely()) ? CONT_EVERY_MS : CONT_RETRY_MS);
+    await scheduleChests();
+    return;
+  }
+  if (contBusy) return;
   contBusy = true;
   try {
     log("Continental: passada so de baus.");
     await window.sro.runContinental({ ...readContUi(), onlyOpenChests: true });
     await scheduleChests();
-    // Ao abrir baus, novos cards podem ter caido: chama analise do album e engatilha dados se tiver vaga
+    // Ao abrir baus, novos cards podem ter caido: refaz a analise do album e
+    // antecipa a rodada de dados (no ponto ela segue as travas de HP do atSpot).
     cardAlbumNextAt = 0;
     setContNext(0);
   } finally {
@@ -2075,6 +2130,67 @@ function log(msg: string): void {
   if (ev) void window.sro.histEvent?.({ ts: Date.now(), ...ev }).catch(() => undefined);
   const al = alertFromLog(msg);
   if (al) void sendAlert(al);
+  const nt = noticeFromLog(msg, Date.now());
+  if (nt) setNotice(nextNotice(stopNotice, nt));
+  else if (clearsNotice(msg)) setNotice(null);
+}
+
+// Por que parou: faixa fixa no topo, salva no localStorage ate o "x" ou ate o
+// bot ser iniciado de novo.
+let stopNotice: StopNotice | null = null;
+const NOTICE_COLORS = { stop: "bg-danger/15 text-danger", warn: "bg-warn/15 text-warn", info: "bg-ink-700 text-gray-200" };
+
+function setNotice(n: StopNotice | null): void {
+  stopNotice = n;
+  try {
+    if (n) localStorage.setItem("stopNotice", JSON.stringify(n));
+    else localStorage.removeItem("stopNotice");
+  } catch {
+    /* sem storage: some ao fechar o app */
+  }
+  showNotice();
+}
+
+function showNotice(): void {
+  const box = $("stop-notice");
+  box.classList.toggle("hidden", !stopNotice);
+  if (!stopNotice) return;
+  box.className = `flex items-start gap-3 px-4 py-2 border-b border-line text-sm ${NOTICE_COLORS[stopNotice.level]}`;
+  const d = new Date(stopNotice.at);
+  const today = d.toDateString() === new Date().toDateString();
+  $("stop-notice-at").textContent = d.toLocaleString("pt-BR", today ? { hour: "2-digit", minute: "2-digit" } : { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  $("stop-notice-text").textContent = stopNotice.text;
+  $("stop-notice-hint").textContent = stopNotice.hint;
+}
+
+function wireNotice(): void {
+  try {
+    const raw = localStorage.getItem("stopNotice");
+    if (raw) stopNotice = JSON.parse(raw) as StopNotice;
+  } catch {
+    stopNotice = null;
+  }
+  $("stop-notice-close").addEventListener("click", () => setNotice(null));
+  showNotice();
+}
+
+// Diagnostico: manda o log da tela e o localStorage pro main, que junta o resto,
+// tira os segredos e pergunta onde salvar.
+async function exportDiagnostic(): Promise<void> {
+  const local: Record<string, string> = {};
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k !== null) local[k] = localStorage.getItem(k) ?? "";
+    }
+  } catch {
+    /* sem storage: vai sem a configuracao do painel */
+  }
+  const st = $("diag-status");
+  st.textContent = "gerando...";
+  const r = await window.sro.diagExport(local, $("log").textContent ?? "").catch((e) => ({ ok: false, path: undefined, erro: String(e) }));
+  st.textContent = r.ok ? `salvo em ${r.path}` : r.erro === "cancelado" ? "" : `falhou: ${r.erro ?? "erro"}`;
+  if (r.ok) log(`diagnostico salvo em ${r.path}.`);
 }
 
 // Falha do Telegram vai pro log uma vez a cada 10 min (sem rede, cada aviso falharia).
@@ -2345,6 +2461,8 @@ interface Stats {
   distance: number;
   lastPos?: [number, number, number];
   deaths: number;
+  kills: number;
+  lastKills?: number;
   lastDead: boolean;
   combatMs: number;
   lastTime: number;
@@ -2363,6 +2481,7 @@ function resetStats(): void {
     totalExp: 0,
     distance: 0,
     deaths: 0,
+    kills: 0,
     lastDead: false,
     combatMs: 0,
     lastTime: 0,
@@ -2404,6 +2523,9 @@ function updateStats(p: PlayerState): void {
   // mortes (transicao vivo -> morto) e tempo em combate
   const now = Date.now();
   if (p.dead && !s.lastDead) s.deaths++;
+  const k = killStep(s.lastKills, p.kills);
+  s.kills += k.gained;
+  s.lastKills = k.last;
   s.lastDead = !!p.dead;
   if (s.lastTime && p.inCombat) {
     const dt = now - s.lastTime;
@@ -2443,6 +2565,9 @@ function renderStats(): void {
   $("s-expgain").textContent = Math.round(s.totalExp).toLocaleString();
   $("s-dist").textContent = Math.round(s.distance).toLocaleString();
   $("s-samples").textContent = String(s.samples);
+  // Engine sem contador de abates (antes do hook com o Killer): "-".
+  $("s-kills").textContent = s.lastKills === undefined ? "-" : String(s.kills);
+  $("s-killrate").textContent = s.lastKills === undefined || upH <= 0 ? "-" : `${Math.round(s.kills / upH)}/h`;
   $("s-deaths").textContent = String(s.deaths);
   $("s-combat").textContent = s.combatMs > 0 ? fmtDur(s.combatMs) : "0s";
   $("s-hp").textContent = s.cur?.maxHp ? `${s.cur.hp}/${s.cur.maxHp}` : "-";
@@ -2747,11 +2872,17 @@ function wire(): void {
     log(v.warn ? `configuracao salva, mas ${v.warn}.` : "configuracao salva.");
   });
   $("btn-st-test").addEventListener("click", () => void testSettingsUi());
+  $("btn-diag").addEventListener("click", () => void exportDiagnostic());
   void wireAi();
   $("btn-vpn-on").addEventListener("click", () => void vpnAction(() => window.sro.vpnEnable(lastVpn?.missing ?? [])));
   $("btn-vpn-off").addEventListener("click", () => void vpnAction(() => window.sro.vpnDisable()));
   $("btn-vpn-ping").addEventListener("click", () => void measureVpnPing());
   void refreshVpn();
+  wireNotice();
+  window.setInterval(() => void checkUniques(), UNIQUE_CHECK_MS);
+  showContNext();
+  $("act-cont").addEventListener("change", showContNext);
+  window.setInterval(showContNext, 60 * 1000);
   window.setInterval(() => void maybeRunDailies().then(() => maybeRunContinental()).then(() => maybeRunChests()).then(() => maybeRunActChests()).then(() => maybeRunFreebies()).then(() => maybeRunCardAlbum()).then(() => maybeRunGuildBoss()).then(() => maybeRequestQigong()), 60 * 1000);
   // Mochila: confere a cada 2 min com o bot rodando e o char em mundo.
   window.setInterval(() => {
@@ -2816,14 +2947,578 @@ function wire(): void {
       document.querySelectorAll(".tab").forEach((t) => t.classList.remove("tab-active"));
       tab.classList.add("tab-active");
       const name = tab.dataset.tab!;
-      for (const t of ["status", "stats", "activities", "tools", "ai"]) {
+      for (const t of ["status", "map", "chat", "stats", "activities", "tools", "ai"]) {
         $(`tab-${t}`).classList.toggle("hidden", t !== name);
       }
     });
   });
 }
 
+// ---- Mapa ao vivo (aba Mapa) ----
+// O char no centro, norte (z maior) pra cima. Le pelo engine:map so com a aba
+// aberta e o jogo conectado, uma leitura por vez: 1 s com o ENTS; 20 s na leitura
+// reserva pelo GETP (engine antigo: ~280 consultas, 13 s medidos em Jangan), pra
+// nao pesar no Treino.
+
+type MapKind = "boss" | "elite" | "monster" | "party" | "player" | "pet" | "npc" | "other";
+interface MapView {
+  me: { x: number; z: number; id: number };
+  target: number;
+  ents: { kind: MapKind; id: number; x: number; z: number; level: number; dead: boolean; hp: number; maxHp: number; name: string }[];
+  drops: { x: number; z: number; item: number; count: number }[];
+  path?: { x: number; z: number }[];
+  source: "ents" | "getp";
+  scene: number;
+  sceneName: string;
+  channel?: number;
+}
+
+const MAP_COLORS: Record<MapKind, string> = {
+  boss: "#a855f7",
+  elite: "#f97316",
+  monster: "#ef4444",
+  party: "#22c55e",
+  player: "#e8c35a",
+  pet: "#8b94a3",
+  npc: "#8b94a3",
+  other: "#4b5563",
+};
+const MAP_ZOOMS = [1.5, 2, 3, 4, 5, 7, 10, 14];
+let mapZoom = 4;
+let mapLast: MapView | null = null;
+let mapBusy = false;
+let mapNextAt = 0;
+
+function mapVisible(): boolean {
+  return !$("tab-map").classList.contains("hidden");
+}
+
+function mapPxPerM(): number {
+  return MAP_ZOOMS[mapZoom];
+}
+
+// Navmesh da cena (paredes): pedido uma vez por cena; o main guarda em disco.
+// Sem navmesh (engine antigo, erro) tenta de novo depois de 2 min.
+let navScene = -1;
+let navData: NavMap | null = null;
+let navBusy = false;
+let navRetryAt = 0;
+
+function ensureNav(scene: number): void {
+  if (scene <= 0 || navBusy || (scene === navScene && (navData || Date.now() < navRetryAt))) return;
+  if (scene !== navScene) navData = null;
+  navScene = scene;
+  navBusy = true;
+  window.sro
+    .navmesh(scene)
+    .then((n) => {
+      if (navScene !== scene) return;
+      navData = n;
+      if (!n) navRetryAt = Date.now() + 120000;
+      drawMap(mapLast);
+    })
+    .catch(() => {
+      navRetryAt = Date.now() + 120000;
+    })
+    .finally(() => {
+      navBusy = false;
+    });
+}
+
+function drawMap(v: MapView | null): void {
+  const cv = $("map-canvas") as HTMLCanvasElement;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth;
+  const h = cv.clientHeight || 560;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+  }
+  const g = cv.getContext("2d");
+  if (!g) return;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = "#0b0d10";
+  g.fillRect(0, 0, w, h);
+  const ppm = mapPxPerM();
+  $("map-scale").textContent = `escala: 10 m = ${Math.round(10 * ppm)} px`;
+  if (!v) {
+    g.fillStyle = "#8b94a3";
+    g.font = "13px sans-serif";
+    g.fillText("sem leitura: abra o jogo e entre no mundo", 16, 28);
+    return;
+  }
+  const cx = w / 2;
+  const cy = h / 2;
+  const sx = (x: number) => cx + (x - v.me.x) * ppm;
+  const sy = (z: number) => cy - (z - v.me.z) * ppm;
+  // Navmesh: fora dele (bloqueado) fica mais escuro, o andavel um pouco mais
+  // claro e a borda vira parede. So o que cabe na tela.
+  const nav = navScene === v.scene ? navData : null;
+  if (nav) {
+    const hw = w / 2 / ppm + 2, hh = h / 2 / ppm + 2;
+    const inView = (x: number, z: number) => Math.abs(x - v.me.x) < hw && Math.abs(z - v.me.z) < hh;
+    g.fillStyle = "#050608";
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = "#12161d";
+    g.beginPath();
+    const T = nav.tris;
+    for (let i = 0; i < T.length; i += 6) {
+      if (!inView(T[i], T[i + 1]) && !inView(T[i + 2], T[i + 3]) && !inView(T[i + 4], T[i + 5])) continue;
+      g.moveTo(sx(T[i]), sy(T[i + 1]));
+      g.lineTo(sx(T[i + 2]), sy(T[i + 3]));
+      g.lineTo(sx(T[i + 4]), sy(T[i + 5]));
+      g.closePath();
+    }
+    g.fill();
+    g.strokeStyle = "#475063";
+    g.lineWidth = 1.5;
+    g.beginPath();
+    const W = nav.walls;
+    for (let i = 0; i < W.length; i += 4) {
+      if (!inView(W[i], W[i + 1]) && !inView(W[i + 2], W[i + 3])) continue;
+      g.moveTo(sx(W[i]), sy(W[i + 1]));
+      g.lineTo(sx(W[i + 2]), sy(W[i + 3]));
+    }
+    g.stroke();
+    g.lineWidth = 1;
+  }
+  // Grade a cada 10 m (mais forte a cada 50 m), presa ao mundo.
+  const step = ppm < 2.5 ? 50 : 10;
+  for (let k = Math.floor((v.me.x - w / 2 / ppm) / step) * step; k <= v.me.x + w / 2 / ppm; k += step) {
+    g.strokeStyle = k % 50 === 0 ? "#1d222b" : "#14181e";
+    g.beginPath();
+    g.moveTo(sx(k), 0);
+    g.lineTo(sx(k), h);
+    g.stroke();
+  }
+  for (let k = Math.floor((v.me.z - h / 2 / ppm) / step) * step; k <= v.me.z + h / 2 / ppm; k += step) {
+    g.strokeStyle = k % 50 === 0 ? "#1d222b" : "#14181e";
+    g.beginPath();
+    g.moveTo(0, sy(k));
+    g.lineTo(w, sy(k));
+    g.stroke();
+  }
+  // Pontos de caca salvos neste mapa, com o raio.
+  for (const sp of trainSpots.filter((s) => s.scene === v.scene)) {
+    const r = (sp.range && sp.range > 0 ? sp.range : 150) * ppm;
+    g.strokeStyle = "rgba(45,212,191,0.55)";
+    g.fillStyle = "rgba(45,212,191,0.06)";
+    g.beginPath();
+    g.arc(sx(sp.x), sy(sp.z), r, 0, Math.PI * 2);
+    g.fill();
+    g.stroke();
+    g.fillStyle = "#2dd4bf";
+    g.fillRect(sx(sp.x) - 2, sy(sp.z) - 2, 4, 4);
+  }
+  // Itens no chao.
+  g.fillStyle = "#fde047";
+  for (const d of v.drops) {
+    g.beginPath();
+    g.arc(sx(d.x), sy(d.z), 2.5, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Caminho que o char esta andando (so o que falta), com o destino marcado.
+  const route = pathAhead(v.me, v.path ?? []);
+  if (route.pts.length) {
+    g.strokeStyle = "rgba(56,189,248,0.85)";
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(cx, cy);
+    for (const p of route.pts) g.lineTo(sx(p.x), sy(p.z));
+    g.stroke();
+    g.lineWidth = 1;
+    const end = route.pts[route.pts.length - 1];
+    g.fillStyle = "#38bdf8";
+    g.beginPath();
+    g.arc(sx(end.x), sy(end.z), 4, 0, Math.PI * 2);
+    g.fill();
+  }
+  // Linha ate o alvo.
+  const tgt = v.target ? v.ents.find((e) => e.id === v.target) : undefined;
+  if (tgt) {
+    g.strokeStyle = "rgba(239,68,68,0.5)";
+    g.setLineDash([4, 4]);
+    g.beginPath();
+    g.moveTo(cx, cy);
+    g.lineTo(sx(tgt.x), sy(tgt.z));
+    g.stroke();
+    g.setLineDash([]);
+  }
+  // Entidades: mortos por baixo e apagados.
+  const order = [...v.ents].sort((a, b) => Number(b.dead) - Number(a.dead));
+  g.font = "11px sans-serif";
+  g.textAlign = "center";
+  for (const e of order) {
+    const x = sx(e.x);
+    const y = sy(e.z);
+    if (x < -20 || y < -20 || x > w + 20 || y > h + 20) continue;
+    const big = e.kind === "boss" ? 7 : e.kind === "elite" ? 6 : e.kind === "npc" || e.kind === "pet" || e.kind === "other" ? 3.5 : 5;
+    g.globalAlpha = e.dead ? 0.25 : 1;
+    g.fillStyle = MAP_COLORS[e.kind];
+    g.beginPath();
+    g.arc(x, y, big, 0, Math.PI * 2);
+    g.fill();
+    if (!e.dead && e.maxHp > 0 && (e.kind === "monster" || e.kind === "elite" || e.kind === "boss")) {
+      const bw = 18;
+      g.fillStyle = "#262d38";
+      g.fillRect(x - bw / 2, y + big + 2, bw, 3);
+      g.fillStyle = "#ef4444";
+      g.fillRect(x - bw / 2, y + big + 2, (bw * Math.max(0, Math.min(e.hp, e.maxHp))) / e.maxHp, 3);
+    }
+    const isT = e.id === v.target;
+    const label = e.kind === "player" || e.kind === "party" || e.kind === "boss" || e.kind === "elite" || isT || (e.kind === "npc" && ppm >= 7);
+    if (label && !e.dead) {
+      g.fillStyle = e.kind === "party" ? "#22c55e" : e.kind === "player" ? "#e8c35a" : "#e5e7eb";
+      const lv = e.level > 0 ? `Lv${e.level} ` : "";
+      g.fillText(`${lv}${e.name}`.trim(), x, y - big - 4);
+    } else if (!e.dead && ppm >= 7 && e.level > 0) {
+      g.fillStyle = "#8b94a3";
+      g.fillText(String(e.level), x, y - big - 3);
+    }
+    g.globalAlpha = 1;
+    if (isT) {
+      const r = big + 6;
+      g.strokeStyle = "#ef4444";
+      g.lineWidth = 2;
+      for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        g.beginPath();
+        g.moveTo(x + dx * r, y + dy * (r - 5));
+        g.lineTo(x + dx * r, y + dy * r);
+        g.lineTo(x + dx * (r - 5), y + dy * r);
+        g.stroke();
+      }
+      g.lineWidth = 1;
+    }
+  }
+  // Voce, no centro.
+  g.fillStyle = "#3b82f6";
+  g.strokeStyle = "#e5e7eb";
+  g.lineWidth = 2;
+  g.beginPath();
+  g.arc(cx, cy, 7, 0, Math.PI * 2);
+  g.fill();
+  g.stroke();
+  g.lineWidth = 1;
+  // Radar no canto: tudo ate 120 m.
+  const rr = 58;
+  const rx = w - rr - 12;
+  const ry = rr + 12;
+  g.fillStyle = "rgba(17,20,25,0.85)";
+  g.strokeStyle = "rgba(45,212,191,0.5)";
+  g.beginPath();
+  g.arc(rx, ry, rr, 0, Math.PI * 2);
+  g.fill();
+  g.stroke();
+  g.beginPath();
+  g.arc(rx, ry, rr / 2, 0, Math.PI * 2);
+  g.stroke();
+  const rs = rr / 120;
+  for (const e of v.ents) {
+    if (e.dead || e.kind === "npc" || e.kind === "pet" || e.kind === "other") continue;
+    const dx = (e.x - v.me.x) * rs;
+    const dy = -(e.z - v.me.z) * rs;
+    if (dx * dx + dy * dy > rr * rr) continue;
+    g.fillStyle = MAP_COLORS[e.kind];
+    g.fillRect(rx + dx - 1.5, ry + dy - 1.5, 3, 3);
+  }
+  g.fillStyle = "#3b82f6";
+  g.fillRect(rx - 2, ry - 2, 4, 4);
+  g.textAlign = "start";
+  // Faixa de cima.
+  const alive = v.ents.filter((e) => !e.dead);
+  const mobs = alive.filter((e) => e.kind === "monster" || e.kind === "elite" || e.kind === "boss").length;
+  const players = alive.filter((e) => e.kind === "player").length;
+  const party = alive.filter((e) => e.kind === "party").length;
+  $("map-title").textContent = `${v.sceneName || `cena ${v.scene}`}${v.channel ? ` · canal ${v.channel}` : ""}`;
+  $("map-info").textContent = `${mobs} monstro(s) · ${players} jogador(es) · ${party} da party`
+    + (route.pts.length ? ` · andando: faltam ${Math.round(route.meters)} m` : "")
+    + (tgt ? ` · alvo: ${tgt.name || "monstro"}${tgt.level ? ` Lv${tgt.level}` : ""}` : "")
+    + (v.source === "getp" ? " · leitura lenta (engine sem ENTS: sem HP nem itens no chão)" : "");
+}
+
+// Aviso de unico: com a aba Mapa aberta usa a leitura dela; fechada, le o ENTS a
+// cada 15 s com o bot rodando. Avisa no log (que vai pro Telegram) e no Windows.
+let uniqueSeen = new Map<number, number>();
+const UNIQUE_CHECK_MS = 15 * 1000;
+
+function noteUniques(v: Pick<MapView, "me" | "ents">): void {
+  const r = uniqueStep(uniqueSeen, v.ents, Date.now());
+  uniqueSeen = r.seen;
+  for (const e of r.fresh) {
+    const text = uniqueText(e, v.me);
+    log(text);
+    try {
+      new Notification("SRO Bot: unico", { body: text });
+    } catch {
+      /* sem notificacao do sistema: fica o log */
+    }
+  }
+}
+
+async function checkUniques(): Promise<void> {
+  if (!polling || !gameOpen || mapVisible()) return;
+  const v = await window.sro.ents().catch(() => null);
+  if (v) noteUniques(v);
+}
+
+async function mapTick(): Promise<void> {
+  if (!mapVisible() || mapBusy || Date.now() < mapNextAt) return;
+  const live = $("map-live");
+  if (!gameOpen) {
+    live.textContent = "parado";
+    live.className = "pill bg-ink-600 text-muted";
+    drawMap(mapLast);
+    return;
+  }
+  mapBusy = true;
+  try {
+    const v = await window.sro.map();
+    mapLast = v;
+    if (v) ensureNav(v.scene);
+    live.textContent = v ? "ao vivo" : "sem leitura";
+    live.className = v ? "pill bg-ok/20 text-ok" : "pill bg-ink-600 text-muted";
+    mapNextAt = Date.now() + (v?.source === "getp" ? 20000 : 1000);
+    drawMap(v);
+    if (v?.source === "ents") noteUniques(v);
+  } catch {
+    mapNextAt = Date.now() + 4000;
+  } finally {
+    mapBusy = false;
+  }
+}
+
+function setupMap(): void {
+  try {
+    const z = Number(localStorage.getItem("mapZoom"));
+    if (Number.isInteger(z) && z >= 0 && z < MAP_ZOOMS.length) mapZoom = z;
+  } catch {
+    /* sem localStorage: zoom padrao */
+  }
+  const zoom = (d: number) => {
+    mapZoom = Math.max(0, Math.min(MAP_ZOOMS.length - 1, mapZoom + d));
+    try {
+      localStorage.setItem("mapZoom", String(mapZoom));
+    } catch {
+      /* ignora */
+    }
+    drawMap(mapLast);
+  };
+  $("map-zoom-in").addEventListener("click", () => zoom(1));
+  $("map-zoom-out").addEventListener("click", () => zoom(-1));
+  window.addEventListener("resize", () => mapVisible() && drawMap(mapLast));
+  setInterval(() => void mapTick(), 250);
+}
+
+// ---- Buffs ativos (aba Status) ----
+// Le o BUFS a cada 10 s com a aba Status aberta e o jogo conectado; entre uma
+// leitura e outra o tempo restante desce aqui, a cada 1 s.
+const BUFFS_EVERY_MS = 10000;
+let buffsLast: CharBuff[] | null = null;
+let buffsAt = 0;
+let buffsBusy = false;
+
+function drawBuffs(): void {
+  const box = $("p-buffs");
+  if (!buffsLast) {
+    box.textContent = gameOpen ? "sem leitura (engine sem BUFS? abra o jogo de novo pelo app)" : "-";
+    return;
+  }
+  if (!buffsLast.length) {
+    box.textContent = "nenhum";
+    return;
+  }
+  const gone = (Date.now() - buffsAt) / 1000;
+  const list = buffsLast
+    .map((b) => (b.left >= 0 ? { ...b, left: b.left - gone } : b))
+    .filter((b) => !(b.total > 0 && b.left >= 0 && b.left <= 0))
+    .sort((a, b) => (a.total > 0 ? 0 : 1) - (b.total > 0 ? 0 : 1) || a.left - b.left);
+  box.replaceChildren(
+    ...list.map((b) => {
+      const chip = document.createElement("span");
+      chip.className = "pill bg-ink-600 text-gray-200";
+      const left = buffLeftText(b);
+      chip.textContent = left ? `${buffLabel(b)} · ${left}` : buffLabel(b);
+      chip.title = `id ${b.id}`;
+      return chip;
+    }),
+  );
+}
+
+async function buffsTick(): Promise<void> {
+  if ($("tab-status").classList.contains("hidden")) return;
+  if (!gameOpen || buffsBusy || Date.now() - buffsAt < BUFFS_EVERY_MS) {
+    drawBuffs();
+    return;
+  }
+  buffsBusy = true;
+  try {
+    buffsLast = await window.sro.buffs();
+  } catch {
+    buffsLast = null;
+  } finally {
+    buffsAt = Date.now();
+    buffsBusy = false;
+  }
+  drawBuffs();
+}
+
+// ---- Chat do jogo (aba Chat) ----
+// Com a aba aberta e o jogo conectado, le as mensagens novas do canal escolhido a
+// cada 3 s. Cada canal guarda o que ja leu (ate 200). O texto entra por
+// textContent: mensagem de jogador nunca vira HTML. Responder so pelo botao (ou
+// Enter); no privado vai pra conversa escolhida (clique numa mensagem; sem
+// escolha, a mais recente).
+const CHAT_EVERY_MS = 3000;
+let chatKey: string = CHAT_CHANNELS[0].key;
+const chatMsgs = new Map<string, ChatMessage[]>();
+let chatBusy = false;
+let chatNextAt = 0;
+let chatTo: { id: string; name: string } | null = null;
+let chatSending = false;
+
+function showChatTo(): void {
+  if (chatKey === "privado" && !chatTo) {
+    const last = [...(chatMsgs.get("privado") ?? [])].reverse().find((m) => m.peerId && m.peerId !== "0");
+    if (last) chatTo = { id: last.peerId, name: last.peer };
+  }
+  $("chat-to").textContent = chatKey === "privado" ? (chatTo ? `Para ${chatTo.name || "?"}:` : "Para: escolha uma mensagem") : "";
+}
+
+async function sendChat(): Promise<void> {
+  const input = $("chat-input") as HTMLInputElement;
+  const status = $("chat-send-status");
+  if (chatSending || !input.value.trim()) return;
+  if (!gameOpen) {
+    status.textContent = "abra o jogo para mandar mensagem";
+    status.className = "text-xs text-warn mt-1";
+    return;
+  }
+  chatSending = true;
+  ($("chat-send") as HTMLButtonElement).disabled = true;
+  try {
+    const r = await window.sro.chatSend(chatKey, input.value, chatKey === "privado" ? chatTo?.id : undefined);
+    if (r.ok) {
+      input.value = "";
+      status.textContent = "enviada pelo jogo; aparece aqui em alguns segundos";
+      status.className = "text-xs text-muted mt-1";
+      chatNextAt = 0;
+    } else {
+      status.textContent = "não enviada: " + (r.erro ?? "erro");
+      status.className = "text-xs text-warn mt-1";
+    }
+  } catch {
+    status.textContent = "não enviada: sem resposta do app";
+    status.className = "text-xs text-warn mt-1";
+  } finally {
+    chatSending = false;
+    ($("chat-send") as HTMLButtonElement).disabled = false;
+  }
+}
+
+function chatVisible(): boolean {
+  return !$("tab-chat").classList.contains("hidden");
+}
+
+function chatLine(m: ChatMessage): HTMLElement {
+  const row = document.createElement("div");
+  const at = document.createElement("span");
+  at.className = "text-xs text-muted mr-2 font-mono";
+  at.textContent = m.at ? new Date(m.at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "--:--";
+  const who = document.createElement("span");
+  who.className = (m.self ? "text-gold" : "text-sky-300") + " mr-1";
+  who.textContent = (m.to ? `${m.from || "?"} → ${m.to}` : m.from || "sistema") + ":";
+  const text = document.createElement("span");
+  text.className = "text-gray-200 break-words";
+  text.textContent = m.text;
+  row.append(at, who, text);
+  if (m.peerId && m.peerId !== "0") {
+    row.className = "cursor-pointer hover:bg-ink-700 rounded";
+    row.title = `responder a ${m.peer || "?"}`;
+    row.addEventListener("click", () => {
+      chatTo = { id: m.peerId, name: m.peer };
+      showChatTo();
+      ($("chat-input") as HTMLInputElement).focus();
+    });
+  }
+  return row;
+}
+
+function drawChat(): void {
+  const box = $("chat-list");
+  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+  const list = chatMsgs.get(chatKey) ?? [];
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "text-muted text-xs";
+    empty.textContent = gameOpen ? "sem mensagens neste canal" : "abra o jogo para ver o chat";
+    box.replaceChildren(empty);
+    return;
+  }
+  box.replaceChildren(...list.map(chatLine));
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+
+async function chatTick(): Promise<void> {
+  if (!chatVisible() || chatBusy || Date.now() < chatNextAt) return;
+  const live = $("chat-live");
+  if (!gameOpen) {
+    live.textContent = "parado";
+    live.className = "pill bg-ink-600 text-muted";
+    return;
+  }
+  chatBusy = true;
+  const key = chatKey;
+  try {
+    const prev = chatMsgs.get(key) ?? [];
+    const fresh = await window.sro.chat(key, prev.length ? prev[prev.length - 1].id : -1);
+    live.textContent = fresh ? "ao vivo" : "sem leitura";
+    live.className = fresh ? "pill bg-ok/20 text-ok" : "pill bg-ink-600 text-muted";
+    if (fresh) chatMsgs.set(key, mergeChat(prev, fresh));
+    if (key === chatKey && (fresh?.length || !prev.length)) {
+      drawChat();
+      showChatTo();
+    }
+    chatNextAt = Date.now() + (fresh ? CHAT_EVERY_MS : 10000);
+  } catch {
+    chatNextAt = Date.now() + 10000;
+  } finally {
+    chatBusy = false;
+  }
+}
+
+function setupChat(): void {
+  const bar = $("chat-channels");
+  const paint = () => {
+    for (const b of bar.querySelectorAll<HTMLElement>("button")) b.className = "btn" + (b.dataset.ch === chatKey ? " btn-gold" : "");
+  };
+  for (const c of CHAT_CHANNELS) {
+    const b = document.createElement("button");
+    b.dataset.ch = c.key;
+    b.textContent = c.label;
+    b.addEventListener("click", () => {
+      chatKey = c.key;
+      chatNextAt = 0;
+      paint();
+      const box = $("chat-list");
+      box.scrollTop = box.scrollHeight;
+      drawChat();
+      showChatTo();
+    });
+    bar.append(b);
+  }
+  paint();
+  drawChat();
+  $("chat-send").addEventListener("click", () => void sendChat());
+  $("chat-input").addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") void sendChat();
+  });
+  setInterval(() => void chatTick(), 250);
+}
+
 wire();
+setupMap();
+setupChat();
+setInterval(() => void buffsTick(), 1000);
 setConn("off", "desconectado");
 log("pronto. Iniciar injeta e sobe o jogo (marque Auto-login pra logar sozinho). Parar restaura.");
 

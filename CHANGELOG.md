@@ -1,36 +1,27 @@
-﻿# Changelog
+# Changelog
 
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). Uma linha por versao com o que ela trouxe.
 
 ## [Nao lancado]
 
+- **App:** atividade **Guild Boss** (Atividades > Guild Boss, desligada por padrao), por metodo: sai da party (ReqTeamOp 7), abre o painel do World Boss e entra pelo Challenge, religa o auto-play na arena e pega a recompensa no fim. A opcao de buffs por gold e a safe zone do golpe supremo ja estao no painel, mas o fluxo ainda nao compra buff nem detecta o golpe. (contribuicao de `RicardoGuedes555`)
+- **App:** Continental: com os espacos cheios de roxo ou melhor, so para de rolar se nao houver bau raro nas casas a frente; com bau dourado a frente, descarta um roxo trancado pra abrir vaga; bau dourado nao perde valor com os espacos cheios. Nova tentativa em 1 min depois de uma rodada que falhou (era 1 h). (contribuicao de `RicardoGuedes555`)
+- **App:** Continental com **Foco de Build** (Equilibrado, INT ou STR) na regiao automatica por cards: soma 35% aos mapas impares (INT) ou pares (STR). (contribuicao de `RicardoGuedes555`)
+- **App:** desmarcar uma atividade com o bot rodando tira o "feito hoje" dela e para o Guild Boss, a Torre ou o Continental; ligar a Torre (ou o Guild Boss) na hora para o loop do Treino antes e religa depois. As diarias pendentes sao conferidas ja no primeiro ciclo. (contribuicao de `RicardoGuedes555`)
+
 ## [0.148.0] - 2026-11-13
 
-- **App:** atividade **Guild Boss (Chefe da Guilda)** automatizada sem coordenadas de tela:
-  sai da party se estiver em grupo (XTeamView _DoLeaveFromTeam), compra buffs de ouro ate
-  o limite configurado (ReqEncourageTwo e get_EncourgeGuildCount), entra na arena do chefe
-  (ReqEnterWorldBossScene / XWorldBossView OnGoBattleClick), detecta golpe supremo e desvia
-  para as zonas de seguranca (XSafeZoneDocument get_IsInSafeRegion), e coleta a recompensa
-  no encerramento (LevelRewardGuildBossHandler OnContinueClick).
-- **App:** Continental inteligente na checagem de baus raros:
-  ao encher os slots de baus, antes de parar o bot verifica se ha bau Roxo ou Dourado (Laranja)
-  nas casas a frente no tabuleiro (hasRareChestAhead). Se houver bau raro a frente, o bot
-  continua jogando os dados, e ao se aproximar de um bau Dourado com slots cheios de Roxos,
-  descarta 1 Roxo para abrir vaga e garantir a captura do Dourado.
-- **App:** correcao na Torre (Demon Locking Tower): desmarcar a opcao cancela a pendencia
-  no dia para permitir reexecucao manual, e o acionamento manual pausa o loop de treino
-  antes de executar para evitar concorrencia. Continental reduz tempo de espera com HP baixo
-  de 1 h para 1 min.
+- **App:** o **Mapa** mostra **paredes e areas bloqueadas**: o navmesh da cena (o mesmo que o jogo usa pra achar caminho) pinta a area andavel um pouco mais clara, o resto fica escuro e a borda vira parede. Lido uma vez por mapa e guardado na pasta de dados (`navmesh/<cena>.txt`); nas proximas vezes abre na hora.
+- **Engine:** comando `NAVM` (`start` pede `NavMesh.CalculateTriangulation` na thread principal; `get <pos>` devolve o resultado em pedacos de 60 mil caracteres).
+- **App:** status do char: a aba Status mostra os **buffs ativos** com nome, nivel, pilha e tempo restante (descendo a cada segundo; lidos a cada 10 s), e a aba Estatisticas ganha **Abates** e **Abates / hora** da sessao.
+- **Engine:** comando `BUFS` (buffs do char com o tempo restante pelo relogio do jogo, lido na thread principal) e `kills` no estado do jogador (o hook de morte conta so as mortes em que quem matou foi o char).
+- **App:** o **Mapa** mostra o **caminho que o char esta andando**: uma linha azul do char ate o destino, so com o trecho que falta, e "andando: faltam N m" no topo. Vale pra viagem do Treino ate o ponto, missao e clique no mapa do jogo; parado, nao aparece. O caminho vem no mesmo ENTS do mapa (precisa do engine novo).
+- **App:** aba **Chat** com o chat do jogo no painel: Mundo, Guilda, Party e Privado (quem mandou pra quem), com hora no seu fuso e nome de quem escreveu (o seu em dourado). Le com a aba aberta e o jogo conectado; a primeira abertura de um canal traz as ultimas 30 mensagens (uns 7 s) e depois so as novas, a cada 3 s. Da pra **responder** pela caixa embaixo (Enter ou Enviar): a mensagem sai pelo mesmo metodo do botao Enviar do jogo, com o filtro de palavras dele. No privado vai pra conversa escolhida (clique numa mensagem; sem escolha, a mais recente). O app respeita as regras do canal (Mundo pede Lv.10 e 20 s entre mensagens; ate 200 caracteres) e so manda quando voce clica.
+- **Engine:** comando `CHAT` pra mandar mensagem no chat (canal, destino e texto em UTF-8). E o texto lido do jogo sai inteiro em UTF-8 (antes letra fora do ASCII vinha como "?"): nomes e mensagens em tailandes, arabe, com acento ou simbolo aparecem certos. Vale depois de abrir o jogo de novo pelo app (o engine novo entra na injecao).
 
 ## [0.147.0] - 2026-11-12
 
-- **App:** Continental com **Foco de Build (INT vs STR)** no seletor de mapas:
-  alem de priorizar cards faltantes, o bot agora favorece os mapas que dao os atributos
-  da build do seu personagem (Build INT prioriza monstros e grupos com dano magico e elemental;
-  Build STR prioriza grupos de dano fisico e atributos STR).
-- **Docs:** arquivo MELHORIAS.txt na raiz detalhando o funcionamento matematico do seletor
-  por cards e a relacao de cada mapa com as builds do jogo.
-- **App:** Continental com a regiao **Automatico por cards**: escolhe o mapa cujos cards mais faltam no Album de Cards pra fechar combinacoes e subir estrela (grupo no maximo nao gasta dado; sem leitura do album, cai no automatico por nivel). A leitura do album fica guardada pra rodada usar, e cada passada de baus pede uma nova analise do album. A rodada de dados continua na agenda de sempre.
+- **App:** Continental com a regiao **Automatico por cards**: escolhe o mapa cujos cards mais faltam no Album de Cards pra fechar combinacoes e subir estrela (grupo no maximo nao gasta dado; sem leitura do album, cai no automatico por nivel). A leitura do album fica guardada pra rodada usar, e cada passada de baus pede uma nova analise do album. Depois de cada passada so de baus a rodada de dados e antecipada pra checagem seguinte, mesmo com o char cacando (no ponto valem as travas de HP de sempre: so comeca com 90% e desiste abaixo de 60%).
 
 ## [0.146.1] - 2026-11-12
 
@@ -50,7 +41,7 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/). 
 - **App:** aba **Mapa**, a visao de cima ao vivo do que esta em volta do char: voce no centro (norte pra cima), monstros com nivel e barra de HP (elite e chefe em cores proprias; Champion e Giant contam como elite pelo nome, porque o jogo nao os marca), o alvo atual marcado e ligado por uma linha, outros jogadores e a party com nome e nivel, NPCs e pets, itens no chao, os pontos de caca salvos com o raio, grade em metros, zoom e radar de 120 m. O topo mostra o mapa, o canal e as contagens. So le com a aba aberta e o jogo conectado.
 - **Engine:** comando `ENTS`, que entrega numa consulta o jogador, o alvo do auto-play, as entidades ate 150 m (tipo, nivel, HP, nome em UTF-8) e os itens no chao. Sem ele (engine antigo), o mapa usa uma leitura mais lenta pelo GETP a cada 20 s, sem HP e sem itens no chao. O engine novo entra quando o jogo e reaberto pelo app. Provado no jogo: no ponto 74-76 o `ENTS` leu os mesmos 17 monstros que o GETP em 11 a 47 ms, contra 3 a 5 s.
 - **App:** botao **Exportar diagnostico** (Ferramentas > Diagnostico): gera um `.txt` com versoes, configuracao (pasta de dados e painel), historico de 24 h e o log, pra mandar quando algo der errado. Senha, token e chaves ficam de fora: os `.bin` e a VPN nao entram, campo com nome de segredo ou de chat vira `***` e o texto perde o que tem formato de token do Telegram, chave de API ou chave WireGuard.
-- **App:** atividade **Ãlbum de Cards** (Atividades > Ãlbum de Cards), por metodo e rodando mesmo cacando: ativa as combinacoes prontas, sobe a estrela do grupo quando completa e, se marcado, quebra so as cartas que sobram acima do total que ainda vai usar ate a estrela maxima de todos os grupos. Escolhe as raridades que podem ser quebradas (por padrao so C e B) e o grupo alvo; "Analisar cards" mostra o que faria sem mexer em nada. Os testes do modulo passam a rodar no `npm test` e no CI.
+- **App:** atividade **Álbum de Cards** (Atividades > Álbum de Cards), por metodo e rodando mesmo cacando: ativa as combinacoes prontas, sobe a estrela do grupo quando completa e, se marcado, quebra so as cartas que sobram acima do total que ainda vai usar ate a estrela maxima de todos os grupos. Escolhe as raridades que podem ser quebradas (por padrao so C e B) e o grupo alvo; "Analisar cards" mostra o que faria sem mexer em nada. Os testes do modulo passam a rodar no `npm test` e no CI.
 
 ## [0.144.0] - 2026-11-12
 
@@ -93,11 +84,11 @@ Primeira versao publicada em Releases: EXE portatil para Windows com o engine de
 
 ## [0.139.0] - 2026-11-11
 
-- **App:** a IA busca sozinha os modelos do Gemini e troca para um que exista; o campo Modelo vazio Ã© automÃ¡tico; o erro de tempo esgotado ficou claro.
+- **App:** a IA busca sozinha os modelos do Gemini e troca para um que exista; o campo Modelo vazio é automático; o erro de tempo esgotado ficou claro.
 
 ## [0.138.0] - 2026-11-10
 
-- **App:** o card "GrÃ¡tis do dia" ganha a opÃ§Ã£o "Doar no Support da guilda".
+- **App:** o card "Grátis do dia" ganha a opção "Doar no Support da guilda".
 
 ## [0.137.1] - 2026-11-10
 
@@ -109,15 +100,15 @@ Primeira versao publicada em Releases: EXE portatil para Windows com o engine de
 
 ## [0.136.0] - 2026-11-10
 
-- **App:** o card "GrÃ¡tis do dia" pega os red envelopes do Lucky Money da guilda, conferindo a cada 5 min na janela das 09:00 Ã s 11:15.
+- **App:** o card "Grátis do dia" pega os red envelopes do Lucky Money da guilda, conferindo a cada 5 min na janela das 09:00 às 11:15.
 
 ## [0.135.0] - 2026-11-10
 
-- **App:** o Firm conclui o dia (Submit) e pega o prÃªmio total com 3 ou mais entregas; o card "GrÃ¡tis do dia" abre os baÃºs do sign-in da guilda ao longo do dia.
+- **App:** o Firm conclui o dia (Submit) e pega o prêmio total com 3 ou mais entregas; o card "Grátis do dia" abre os baús do sign-in da guilda ao longo do dia.
 
 ## [0.134.0] - 2026-11-10
 
-- **App:** card "GrÃ¡tis do dia" pega sozinho os pacotes grÃ¡tis do Event (Premium Shop), o attendance do Welfare com os prÃªmios acumulados e a caixinha grÃ¡tis do Daily Pack.
+- **App:** card "Grátis do dia" pega sozinho os pacotes grátis do Event (Premium Shop), o attendance do Welfare com os prêmios acumulados e a caixinha grátis do Daily Pack.
 
 ## [0.133.0] - 2026-11-10
 
@@ -141,7 +132,7 @@ Primeira versao publicada em Releases: EXE portatil para Windows com o engine de
 
 ## [0.128.0] - 2026-11-09
 
-- **App:** nova atividade "BaÃºs de atividade diÃ¡ria": pega os baÃºs de 30, 60, 90, 120 e 150 pontos assim que liberam.
+- **App:** nova atividade "Baús de atividade diária": pega os baús de 30, 60, 90, 120 e 150 pontos assim que liberam.
 
 ## [0.127.0] - 2026-11-09
 
